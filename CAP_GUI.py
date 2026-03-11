@@ -8,6 +8,7 @@ import csv
 from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates 
 
 # ========= 設定 =========
 INTERFACE = "wlx105a95baef46"
@@ -206,19 +207,25 @@ def generate_timeline():
             return
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         g = df.groupby("mac")["timestamp"].agg(["min", "max"])
-        # 0秒滞在のMACを除外するオプション
         if exclude_zero_var.get():
             g = g[(g["max"] - g["min"]).dt.total_seconds() > 0]
+        
+        base_time = g["min"].min()  # 最小時刻を基準にする
+
         fig, ax = plt.subplots(figsize=(10, max(4,len(g)*0.3)))
+
         for mac, row in g.iterrows():
-            start = row["min"].timestamp()
-            end = row["max"].timestamp()
-            ax.barh(mac, end-start, left=start)
-        ax.set_xlabel("time")
+            start_sec = (row["min"] - base_time).total_seconds()  # 0秒スタートの相対秒
+            duration = (row["max"] - row["min"]).total_seconds()
+            ax.barh(mac, duration, left=start_sec)
+
+        ax.set_xlabel("Elapsed Time (seconds)")
         ax.set_ylabel("MAC")
         ax.set_title("WiFi STA Presence Timeline")
-        ax.tick_params(axis='y', labelsize=6)  # 縦軸ラベルを小さめ
+        ax.set_xlim(0, max((g["max"] - base_time).dt.total_seconds())*1.05)  # 5%余裕を持たせる
+        ax.tick_params(axis='y', labelsize=6)
         plt.tight_layout()
+
         out = "wifi_timeline.png"
         plt.savefig(out)
         log(f"[Timeline] 保存 → {out}")
