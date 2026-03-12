@@ -199,37 +199,83 @@ def generate_timeline():
     if not os.path.exists(CSV_FILE):
         log("[Timeline] CSVがありません")
         return
+
     try:
         df = pd.read_csv(CSV_FILE)
+
+        # STAのみ
         df = df[df["type"] == "STA"]
         if df.empty:
             log("[Timeline] STAデータ無し")
             return
+
         df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+        # MACごとに最初と最後
         g = df.groupby("mac")["timestamp"].agg(["min", "max"])
+
+        # 滞在時間計算
+        g["duration"] = (g["max"] - g["min"]).dt.total_seconds()
+
+        # 5秒未満を除外
         if exclude_zero_var.get():
-            g = g[(g["max"] - g["min"]).dt.total_seconds() > 0]
-        
-        base_time = g["min"].min()  # 最小時刻を基準にする
+            g = g[g["duration"] >= 5]
 
-        fig, ax = plt.subplots(figsize=(10, max(4,len(g)*0.3)))
+        if g.empty:
+            log("[Timeline] 表示できるMAC無し")
+            return
 
+        # 滞在時間長い順
+        g = g.sort_values("duration", ascending=False)
+
+        # MAC多すぎ防止（最大40）
+        MAX_MAC = 40
+        if len(g) > MAX_MAC:
+            g = g.head(MAX_MAC)
+
+        # 基準時間
+        base_time = g["min"].min()
+
+        # グラフサイズ
+        fig_height = max(6, len(g) * 0.4)
+        fig, ax = plt.subplots(figsize=(12, fig_height))
+
+        # 棒描画
         for mac, row in g.iterrows():
-            start_sec = (row["min"] - base_time).total_seconds()  # 0秒スタートの相対秒
-            duration = (row["max"] - row["min"]).total_seconds()
+            start_sec = (row["min"] - base_time).total_seconds()
+            duration = row["duration"]
             ax.barh(mac, duration, left=start_sec)
 
-        ax.set_xlabel("Elapsed Time (seconds)")
+        # ===== 横軸を mm:ss 表示 =====
+        from matplotlib.ticker import FuncFormatter
+
+        def sec_to_minsec(x, pos):
+            m = int(x // 60)
+            s = int(x % 60)
+            return f"{m}:{s:02d}"
+
+        ax.xaxis.set_major_formatter(FuncFormatter(sec_to_minsec))
+
+        # 軸設定
+        ax.set_xlabel("Elapsed Time (mm:ss)")
         ax.set_ylabel("MAC")
         ax.set_title("WiFi STA Presence Timeline")
-        ax.set_xlim(0, max((g["max"] - base_time).dt.total_seconds())*1.05)  # 5%余裕を持たせる
-        ax.tick_params(axis='y', labelsize=6)
+
+        max_time = (g["max"] - base_time).dt.total_seconds().max()
+        ax.set_xlim(0, max_time * 1.05)
+
+        ax.tick_params(axis='y', labelsize=8)
+
         plt.tight_layout()
 
         out = "wifi_timeline.png"
         plt.savefig(out)
+
+        log(f"[Timeline] MAC数: {len(g)}")
         log(f"[Timeline] 保存 → {out}")
+
         plt.show()
+
     except Exception as e:
         log(f"[Timeline ERROR] {e}")
 
@@ -279,7 +325,7 @@ def stop_and_exit():
 # GUI
 # =========================
 root = tk.Tk()
-root.title("Wi-Fi 人数推定GUI")
+root.title("MAC_GUI")
 
 rssi_estimate_var = tk.BooleanVar(value=True)
 time_var = tk.IntVar(value=5)
@@ -325,7 +371,7 @@ tk.Checkbutton(estimate_frame, text="RSSI人数推定をログ表示", variable=
 
 exclude_frame = tk.Frame(root)
 exclude_frame.pack(pady=5)
-tk.Checkbutton(exclude_frame, text="滞在時間0秒のMACを除外", variable=exclude_zero_var).pack(anchor="w")
+tk.Checkbutton(exclude_frame, text="滞在時間5秒未満のMACを除外", variable=exclude_zero_var).pack(anchor="w")
 
 start_btn = tk.Button(root, text="② キャプチャ開始", command=start_capture, state="disabled")
 start_btn.pack(pady=5)
