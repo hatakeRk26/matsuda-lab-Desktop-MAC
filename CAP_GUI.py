@@ -60,11 +60,11 @@ def log(msg):
 # =========================
 # CSV保存
 # =========================
-def save_csv(mac_type, mac, rssi, ch):
+def save_csv(timestamp, mac_type, mac, rssi, ch):
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+            timestamp.strftime("%Y-%m-%d %H:%M:%S.%f"),
             mac_type,
             mac,
             rssi,
@@ -147,47 +147,88 @@ def on_ap_select(event):
 # MAC抽出
 # =========================
 def extract_macs(pcap_file):
+
     if not os.path.exists(pcap_file):
         log("[MAC抽出] pcap無し")
         return
+
     packets = rdpcap(pcap_file)
+
     mode = mac_mode.get()
     sta_records = {}
+
     log("========== MAC + RSSI ==========")
+
     for pkt in packets:
+
         if not pkt.haslayer(Dot11):
             continue
+
         dot11 = pkt[Dot11]
+
         if dot11.type == 0 and dot11.subtype == 4:
+
             if not dot11.addr2:
                 continue
+
             mac = dot11.addr2
+
             if mac in ap_bssid_set:
                 continue
+
+            # ★ 修正ポイント
             pkt_time = datetime.fromtimestamp(float(pkt.time))
+
             rssi = getattr(pkt, "dBm_AntSignal", None)
-            save_csv("STA", mac, rssi, selected_channel)
+
+            # CSV保存
+            save_csv(pkt_time, "STA", mac, rssi, selected_channel)
+
             if mac not in sta_records:
-                sta_records[mac] = {"first": pkt_time, "last": pkt_time, "rssi_list": []}
+
+                sta_records[mac] = {
+                    "first": pkt_time,
+                    "last": pkt_time,
+                    "rssi_list": []
+                }
+
             else:
                 sta_records[mac]["last"] = pkt_time
+
             sta_records[mac]["rssi_list"].append(rssi)
-    # ログ表示
+
+    # ======================
+    # 表示
+    # ======================
+
     if mode == "multi":
+
         for mac, data in sta_records.items():
-            for r in data["rssi_list"]:
-                lifetime = (data["last"] - data["first"]).total_seconds()
-                mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
-                log(f"STA {mac} [{mac_type}] RSSI={r} lifetime={int(lifetime)}秒")
-    else:
-        for mac, data in sta_records.items():
+
             lifetime = (data["last"] - data["first"]).total_seconds()
-            avg_rssi = None
-            valid = [r for r in data["rssi_list"] if r is not None]
-            if valid:
-                avg_rssi = int(sum(valid)/len(valid))
+
             mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
+
+            for r in data["rssi_list"]:
+                log(f"STA {mac} [{mac_type}] RSSI={r} lifetime={int(lifetime)}秒")
+
+    else:
+
+        for mac, data in sta_records.items():
+
+            lifetime = (data["last"] - data["first"]).total_seconds()
+
+            valid = [r for r in data["rssi_list"] if r is not None]
+
+            avg_rssi = None
+
+            if valid:
+                avg_rssi = int(sum(valid) / len(valid))
+
+            mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
+
             log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={int(lifetime)}秒")
+
     log(f"STA数: {len(sta_records)}")
     log(f"[CSV保存] → {CSV_FILE}")
     log("================================")
@@ -228,15 +269,14 @@ def generate_timeline():
         # 滞在時間長い順
         g = g.sort_values("duration", ascending=False)
 
-        # MAC多すぎ防止（最大40）
-        MAX_MAC = 40
-        if len(g) > MAX_MAC:
-            g = g.head(MAX_MAC)
+        # 最大40件
+        if len(g) > 40:
+            g = g.head(40)
 
         # 基準時間
         base_time = g["min"].min()
 
-        # グラフサイズ
+        # グラフ
         fig_height = max(6, len(g) * 0.4)
         fig, ax = plt.subplots(figsize=(12, fig_height))
 
@@ -246,8 +286,8 @@ def generate_timeline():
             duration = row["duration"]
             ax.barh(mac, duration, left=start_sec)
 
-        # ===== 横軸を mm:ss 表示 =====
-        from matplotlib.ticker import FuncFormatter
+        # ===== 横軸フォーマット =====
+        from matplotlib.ticker import FuncFormatter, MultipleLocator
 
         def sec_to_minsec(x, pos):
             m = int(x // 60)
@@ -256,14 +296,33 @@ def generate_timeline():
 
         ax.xaxis.set_major_formatter(FuncFormatter(sec_to_minsec))
 
-        # 軸設定
+        # ===== ★ここが重要：測定時間ベースに変更 =====
+        measurement_time = time_var.get() * 60
+        ax.set_xlim(0, measurement_time)
+
+        # 1分ごとに目盛り
+        ax.xaxis.set_major_locator(MultipleLocator(60))
+
+        # ===== ラベル =====
         ax.set_xlabel("Elapsed Time (mm:ss)")
         ax.set_ylabel("MAC")
-        ax.set_title("WiFi STA Presence Timeline")
 
-        max_time = (g["max"] - base_time).dt.total_seconds().max()
-        ax.set_xlim(0, max_time * 1.05)
+        # ===== タイトル（上書きしない）=====
+        ax.set_title(f"WiFi STA Presence Timeline ({time_var.get()} min measurement)")
 
+        # ===== 右下注釈 =====
+        ax.text(
+            0.99, 0.01,
+            f"Measurement: {time_var.get()} min",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=10,
+            color="gray"
+        )
+
+        # ===== 見やすくする =====
+        ax.grid(axis="x", linestyle="--", alpha=0.3)
         ax.tick_params(axis='y', labelsize=8)
 
         plt.tight_layout()
@@ -284,20 +343,34 @@ def generate_timeline():
 # =========================
 def start_capture():
     global tcpdump_proc
+
     if selected_channel is None:
         messagebox.showwarning("警告", "AP選択またはチャネル入力")
         return
+
+    # CSVリセット
+    with open(CSV_FILE, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp","type","mac","rssi","channel"])
+    log("[CSV] リセットしました")
+
     duration = time_var.get()
     seconds = duration * 60
+
     subprocess.run(["iw","dev",INTERFACE,"set","channel",str(selected_channel)],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     pcap_file = f"capture_ch{selected_channel}_{duration}min.pcap"
+
     log(f"[Capture] 開始 CH{selected_channel}")
     log(f"[時間] {duration}分")
+
     cmd = ["tcpdump","-i",INTERFACE,"-w",pcap_file,"-G",str(seconds),"-W","1"]
     tcpdump_proc = subprocess.Popen(cmd)
+
     status_label.config(text="キャプチャ中")
     start_btn.config(state="disabled")
+
     threading.Thread(target=wait_and_finish, args=(pcap_file,), daemon=True).start()
 
 # =========================
@@ -327,7 +400,7 @@ def stop_and_exit():
 root = tk.Tk()
 root.title("MAC_GUI")
 
-rssi_estimate_var = tk.BooleanVar(value=True)
+rssi_estimate_var = tk.BooleanVar(value=False)
 time_var = tk.IntVar(value=5)
 mac_mode = tk.StringVar(value="unique")
 exclude_zero_var = tk.BooleanVar(value=True)  # lifetime0 MAC除外オプション
