@@ -15,22 +15,17 @@ INTERFACE = "wlx105a95baef46"
 BEACON_PCAP = "beacon_scan.pcap"
 BEACON_TIME = 10
 CSV_FILE = "wifi_observe.csv"
+GAP_THRESHOLD = 30
 # ========================
 
 tcpdump_proc = None
 selected_channel = None
 ap_bssid_set = set()
 
-# =========================
-# LOCAL / UNIVERSAL 判定
-# =========================
 def is_local_mac(mac):
     first_byte = int(mac.split(":")[0], 16)
     return (first_byte & 0b00000010) != 0
 
-# =========================
-# 手動チャネル入力
-# =========================
 def manual_channel_set(event=None):
     global selected_channel
     val = channel_entry.get()
@@ -42,24 +37,15 @@ def manual_channel_set(event=None):
         channel_label.config(text=f"手動チャネル: CH {ch}")
         start_btn.config(state="normal")
 
-# =========================
-# CSV初期化
-# =========================
 if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["timestamp","type","mac","rssi","channel"])
 
-# =========================
-# ログ表示
-# =========================
 def log(msg):
     log_text.insert(tk.END, msg + "\n")
     log_text.see(tk.END)
 
-# =========================
-# CSV保存
-# =========================
 def save_csv(timestamp, mac_type, mac, rssi, ch):
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
@@ -71,9 +57,6 @@ def save_csv(timestamp, mac_type, mac, rssi, ch):
             ch
         ])
 
-# =========================
-# Beacon取得
-# =========================
 def capture_beacons():
     if os.path.exists(BEACON_PCAP):
         os.remove(BEACON_PCAP)
@@ -84,9 +67,6 @@ def capture_beacons():
     if result.stderr:
         log(result.stderr.strip())
 
-# =========================
-# Beacon解析
-# =========================
 def analyze_beacons():
     ap_info = []
     if not os.path.exists(BEACON_PCAP):
@@ -129,9 +109,6 @@ def beacon_task():
     capture_beacons()
     analyze_beacons()
 
-# =========================
-# AP選択
-# =========================
 def on_ap_select(event):
     global selected_channel
     sel = ap_list.curselection()
@@ -143,9 +120,6 @@ def on_ap_select(event):
     channel_label.config(text=f"選択中チャネル: CH {ch}")
     start_btn.config(state="normal")
 
-# =========================
-# MAC抽出
-# =========================
 def extract_macs(pcap_file):
 
     if not os.path.exists(pcap_file):
@@ -176,12 +150,10 @@ def extract_macs(pcap_file):
             if mac in ap_bssid_set:
                 continue
 
-            # ★ 修正ポイント
             pkt_time = datetime.fromtimestamp(float(pkt.time))
 
             rssi = getattr(pkt, "dBm_AntSignal", None)
 
-            # CSV保存
             save_csv(pkt_time, "STA", mac, rssi, selected_channel)
 
             if mac not in sta_records:
@@ -196,10 +168,6 @@ def extract_macs(pcap_file):
                 sta_records[mac]["last"] = pkt_time
 
             sta_records[mac]["rssi_list"].append(rssi)
-
-    # ======================
-    # 表示
-    # ======================
 
     if mode == "multi":
 
@@ -233,114 +201,123 @@ def extract_macs(pcap_file):
     log(f"[CSV保存] → {CSV_FILE}")
     log("================================")
 
-# =========================
-# 滞在時間タイムライン生成
-# =========================
 def generate_timeline():
-    if not os.path.exists(CSV_FILE):
-        log("[Timeline] CSVがありません")
+    pcap_files = [f for f in os.listdir() if f.endswith(".pcap")]
+    if not pcap_files:
+        log("[Timeline] pcapがありません")
         return
 
-    try:
-        df = pd.read_csv(CSV_FILE)
+    pcap_file = max(pcap_files, key=os.path.getctime)
+    log(f"[Timeline] 使用pcap: {pcap_file}")
 
-        # STAのみ
-        df = df[df["type"] == "STA"]
-        if df.empty:
-            log("[Timeline] STAデータ無し")
-            return
+    packets = rdpcap(pcap_file)
+    sta_sessions = {}
 
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+    for pkt in packets:
 
-        # MACごとに最初と最後
-        g = df.groupby("mac")["timestamp"].agg(["min", "max"])
+        if not pkt.haslayer(Dot11):
+            continue
 
-        # 滞在時間計算
-        g["duration"] = (g["max"] - g["min"]).dt.total_seconds()
+        dot11 = pkt[Dot11]
 
-        # 5秒未満を除外
-        if exclude_zero_var.get():
-            g = g[g["duration"] >= 5]
+        if dot11.type == 0 and dot11.subtype == 4:
 
-        if g.empty:
-            log("[Timeline] 表示できるMAC無し")
-            return
+            mac = dot11.addr2
 
-        # 滞在時間長い順
-        g = g.sort_values("duration", ascending=False)
+            if not mac:
+                continue
 
-        # 最大40件
-        if len(g) > 40:
-            g = g.head(40)
+            if mac in ap_bssid_set:
+                continue
 
-        # 基準時間
-        base_time = g["min"].min()
+            pkt_time = datetime.fromtimestamp(float(pkt.time))
 
-        # グラフ
-        fig_height = max(6, len(g) * 0.4)
-        fig, ax = plt.subplots(figsize=(12, fig_height))
+            if mac not in sta_sessions:
+                sta_sessions[mac] = [[pkt_time, pkt_time]]
+            else:
+                last_session = sta_sessions[mac][-1]
+                gap = (pkt_time - last_session[1]).total_seconds()
 
-        # 棒描画
-        for mac, row in g.iterrows():
-            start_sec = (row["min"] - base_time).total_seconds()
-            duration = row["duration"]
-            ax.barh(mac, duration, left=start_sec)
+                if gap <= GAP_THRESHOLD:
+                    last_session[1] = pkt_time
+                else:
+                    sta_sessions[mac].append([pkt_time, pkt_time])
 
-        # ===== 横軸フォーマット =====
-        from matplotlib.ticker import FuncFormatter, MultipleLocator
+    rows = []
 
-        def sec_to_minsec(x, pos):
-            m = int(x // 60)
-            s = int(x % 60)
-            return f"{m}:{s:02d}"
+    for mac, sessions in sta_sessions.items():
+        for start, end in sessions:
 
-        ax.xaxis.set_major_formatter(FuncFormatter(sec_to_minsec))
+            duration = (end - start).total_seconds()
 
-        # ===== ★ここが重要：測定時間ベースに変更 =====
-        measurement_time = time_var.get() * 60
-        ax.set_xlim(0, measurement_time)
+            if exclude_zero_var.get():
+                if duration < 5:
+                    continue
 
-        # 1分ごとに目盛り
-        ax.xaxis.set_major_locator(MultipleLocator(60))
+            rows.append({
+                "mac": mac,
+                "start": start,
+                "duration": duration
+            })
 
-        # ===== ラベル =====
-        ax.set_xlabel("Elapsed Time (mm:ss)")
-        ax.set_ylabel("MAC")
+    if not rows:
+        log("[Timeline] 表示できるMAC無し")
+        return
 
-        # ===== タイトル（上書きしない）=====
-        ax.set_title(f"WiFi STA Presence Timeline ({time_var.get()} min measurement)")
+    df = pd.DataFrame(rows)
 
-        # ===== 右下注釈 =====
-        ax.text(
-            0.99, 0.01,
-            f"Measurement: {time_var.get()} min",
-            transform=ax.transAxes,
-            ha="right",
-            va="bottom",
-            fontsize=10,
-            color="gray"
-        )
+    df = df.sort_values("duration", ascending=False)
 
-        # ===== 見やすくする =====
-        ax.grid(axis="x", linestyle="--", alpha=0.3)
-        ax.tick_params(axis='y', labelsize=8)
+    if len(df) > 40:
+        df = df.head(40)
 
-        plt.tight_layout()
+    base_time = df["start"].min()
 
-        out = "wifi_timeline.png"
-        plt.savefig(out)
+    fig_height = max(6, len(df) * 0.4)
+    fig, ax = plt.subplots(figsize=(12, fig_height))
 
-        log(f"[Timeline] MAC数: {len(g)}")
-        log(f"[Timeline] 保存 → {out}")
+    for _, row in df.iterrows():
+        start_sec = (row["start"] - base_time).total_seconds()
+        ax.barh(row["mac"], row["duration"], left=start_sec)
 
-        plt.show()
+    from matplotlib.ticker import FuncFormatter, MultipleLocator
 
-    except Exception as e:
-        log(f"[Timeline ERROR] {e}")
+    def sec_to_minsec(x, pos):
+        m = int(x // 60)
+        s = int(x % 60)
+        return f"{m}:{s:02d}"
 
-# =========================
-# キャプチャ開始
-# =========================
+    ax.xaxis.set_major_formatter(FuncFormatter(sec_to_minsec))
+    ax.set_xlim(0, time_var.get() * 60)
+    ax.xaxis.set_major_locator(MultipleLocator(60))
+
+    ax.set_xlabel("Elapsed Time (mm:ss)")
+    ax.set_ylabel("MAC")
+    ax.set_title(f"WiFi STA Presence Timeline ({time_var.get()} min measurement)")
+
+    ax.text(
+        0.99, 0.01,
+        f"Measurement: {time_var.get()} min",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=10,
+        color="gray"
+    )
+
+    ax.grid(axis="x", linestyle="--", alpha=0.3)
+    ax.tick_params(axis='y', labelsize=8)
+
+    plt.tight_layout()
+
+    out = "wifi_timeline.png"
+    plt.savefig(out)
+
+    log(f"[Timeline] MAC数: {len(df)}")
+    log(f"[Timeline] 保存 → {out}")
+
+    plt.show()
+
 def start_capture():
     global tcpdump_proc
 
@@ -348,7 +325,6 @@ def start_capture():
         messagebox.showwarning("警告", "AP選択またはチャネル入力")
         return
 
-    # CSVリセット
     with open(CSV_FILE, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["timestamp","type","mac","rssi","channel"])
@@ -373,9 +349,6 @@ def start_capture():
 
     threading.Thread(target=wait_and_finish, args=(pcap_file,), daemon=True).start()
 
-# =========================
-# キャプチャ終了後
-# =========================
 def wait_and_finish(pcap_file):
     global tcpdump_proc
     tcpdump_proc.wait()
@@ -384,9 +357,6 @@ def wait_and_finish(pcap_file):
     status_label.config(text="完了")
     start_btn.config(state="normal")
 
-# =========================
-# 終了
-# =========================
 def stop_and_exit():
     global tcpdump_proc
     if tcpdump_proc and tcpdump_proc.poll() is None:
@@ -394,16 +364,13 @@ def stop_and_exit():
         tcpdump_proc.wait()
     root.destroy()
 
-# =========================
-# GUI
-# =========================
 root = tk.Tk()
 root.title("MAC_GUI")
 
 rssi_estimate_var = tk.BooleanVar(value=False)
 time_var = tk.IntVar(value=5)
 mac_mode = tk.StringVar(value="unique")
-exclude_zero_var = tk.BooleanVar(value=True)  # lifetime0 MAC除外オプション
+exclude_zero_var = tk.BooleanVar(value=True)
 
 top_frame = tk.Frame(root)
 top_frame.pack(pady=5)
