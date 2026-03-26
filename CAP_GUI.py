@@ -202,6 +202,8 @@ def extract_macs(pcap_file):
     log("================================")
 
 def generate_timeline():
+    import numpy as np
+
     pcap_files = [f for f in os.listdir() if f.endswith(".pcap")]
     if not pcap_files:
         log("[Timeline] pcapがありません")
@@ -276,9 +278,25 @@ def generate_timeline():
     fig_height = max(6, len(df) * 0.4)
     fig, ax = plt.subplots(figsize=(12, fig_height))
 
+    # =========================
+    # ★ 色をMACごとに固定
+    # =========================
+    unique_macs = df["mac"].unique()
+    color_map = {}
+    for mac in unique_macs:
+        color_map[mac] = np.random.rand(3,)
+
+    # =========================
+    # ★ 描画
+    # =========================
     for _, row in df.iterrows():
         start_sec = (row["start"] - base_time).total_seconds()
-        ax.barh(row["mac"], row["duration"], left=start_sec)
+        ax.barh(
+            row["mac"],
+            row["duration"],
+            left=start_sec,
+            color=color_map[row["mac"]]
+        )
 
     from matplotlib.ticker import FuncFormatter, MultipleLocator
 
