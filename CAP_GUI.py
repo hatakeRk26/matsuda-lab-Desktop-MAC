@@ -231,7 +231,7 @@ def generate_timeline():
     df["start"] = pd.to_datetime(df["start"])
 
     if exclude_zero_var.get():
-        df = df[df["duration"] >= 5]
+        df = df[df["duration"] > 0]
 
     if df.empty:
         log("[Timeline] 表示できるMAC無し")
@@ -360,9 +360,24 @@ option_frame.pack(pady=5)
 
 time_frame = tk.LabelFrame(option_frame, text="時間")
 time_frame.pack(side="left", padx=5)
-for t in [1,2,3,5,10,15]:
-    tk.Radiobutton(time_frame, text=f"{t}分", variable=time_var, value=t).pack(anchor="w")
+times = [1,2,3,5,10,15,30,60]
 
+for i, t in enumerate(times):
+    row = i // 3
+    col = i % 3
+
+    label = f"{t}分" if t < 60 else "60分"
+
+    tk.Radiobutton(
+        time_frame,
+        text=label,
+        variable=time_var,
+        value=t
+    ).grid(row=row, column=col, sticky="ew", padx=5, pady=2)
+
+# 列幅を均等にする
+for i in range(3):
+    time_frame.grid_columnconfigure(i, weight=1)
 mac_frame = tk.LabelFrame(option_frame, text="MAC表示")
 mac_frame.pack(side="left", padx=5)
 tk.Radiobutton(mac_frame, text="重複削除", variable=mac_mode, value="unique").pack(anchor="w")
@@ -374,7 +389,7 @@ tk.Checkbutton(estimate_frame, text="RSSI人数推定をログ表示", variable=
 
 exclude_frame = tk.Frame(root)
 exclude_frame.pack(pady=5)
-tk.Checkbutton(exclude_frame, text="滞在時間5秒未満のMACを除外", variable=exclude_zero_var).pack(anchor="w")
+tk.Checkbutton(exclude_frame, text="滞在時間0秒のMACを除外", variable=exclude_zero_var).pack(anchor="w")
 
 start_btn = tk.Button(root, text="② キャプチャ開始", command=start_capture, state="disabled")
 start_btn.pack(pady=5)
