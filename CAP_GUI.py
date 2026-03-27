@@ -130,6 +130,7 @@ def extract_macs(pcap_file):
 
     mode = mac_mode.get()
     sta_records = {}
+    sta_sessions = {}
 
     log("========== MAC + RSSI ==========")
 
@@ -151,89 +152,23 @@ def extract_macs(pcap_file):
                 continue
 
             pkt_time = datetime.fromtimestamp(float(pkt.time))
-
             rssi = getattr(pkt, "dBm_AntSignal", None)
 
             save_csv(pkt_time, "STA", mac, rssi, selected_channel)
 
+            # ===== lifetime用 =====
             if mac not in sta_records:
-
                 sta_records[mac] = {
                     "first": pkt_time,
                     "last": pkt_time,
                     "rssi_list": []
                 }
-
             else:
                 sta_records[mac]["last"] = pkt_time
 
             sta_records[mac]["rssi_list"].append(rssi)
 
-    if mode == "multi":
-
-        for mac, data in sta_records.items():
-
-            lifetime = (data["last"] - data["first"]).total_seconds()
-
-            mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
-
-            for r in data["rssi_list"]:
-                log(f"STA {mac} [{mac_type}] RSSI={r} lifetime={int(lifetime)}秒")
-
-    else:
-
-        for mac, data in sta_records.items():
-
-            lifetime = (data["last"] - data["first"]).total_seconds()
-
-            valid = [r for r in data["rssi_list"] if r is not None]
-
-            avg_rssi = None
-
-            if valid:
-                avg_rssi = int(sum(valid) / len(valid))
-
-            mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
-
-            log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={int(lifetime)}秒")
-
-    log(f"STA数: {len(sta_records)}")
-    log(f"[CSV保存] → {CSV_FILE}")
-    log("================================")
-
-def generate_timeline():
-    import numpy as np
-
-    pcap_files = [f for f in os.listdir() if f.endswith(".pcap")]
-    if not pcap_files:
-        log("[Timeline] pcapがありません")
-        return
-
-    pcap_file = max(pcap_files, key=os.path.getctime)
-    log(f"[Timeline] 使用pcap: {pcap_file}")
-
-    packets = rdpcap(pcap_file)
-    sta_sessions = {}
-
-    for pkt in packets:
-
-        if not pkt.haslayer(Dot11):
-            continue
-
-        dot11 = pkt[Dot11]
-
-        if dot11.type == 0 and dot11.subtype == 4:
-
-            mac = dot11.addr2
-
-            if not mac:
-                continue
-
-            if mac in ap_bssid_set:
-                continue
-
-            pkt_time = datetime.fromtimestamp(float(pkt.time))
-
+            # ===== セッション生成（ここ追加）=====
             if mac not in sta_sessions:
                 sta_sessions[mac] = [[pkt_time, pkt_time]]
             else:
@@ -245,28 +180,62 @@ def generate_timeline():
                 else:
                     sta_sessions[mac].append([pkt_time, pkt_time])
 
-    rows = []
+    # ===== セッションCSV保存（追加）=====
+    session_file = "sessions.csv"
+    with open(session_file, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["mac", "start", "end", "duration"])
 
-    for mac, sessions in sta_sessions.items():
-        for start, end in sessions:
+        for mac, sessions in sta_sessions.items():
+            for start, end in sessions:
+                duration = (end - start).total_seconds()
+                writer.writerow([mac, start, end, duration])
 
-            duration = (end - start).total_seconds()
+    log(f"[Session保存] → {session_file}")
 
-            if exclude_zero_var.get():
-                if duration < 5:
-                    continue
+    # ===== 既存ログ処理（そのまま）=====
+    if mode == "multi":
+        for mac, data in sta_records.items():
+            lifetime = (data["last"] - data["first"]).total_seconds()
+            mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
 
-            rows.append({
-                "mac": mac,
-                "start": start,
-                "duration": duration
-            })
+            for r in data["rssi_list"]:
+                log(f"STA {mac} [{mac_type}] RSSI={r} lifetime={int(lifetime)}秒")
+    else:
+        for mac, data in sta_records.items():
+            lifetime = (data["last"] - data["first"]).total_seconds()
 
-    if not rows:
-        log("[Timeline] 表示できるMAC無し")
+            valid = [r for r in data["rssi_list"] if r is not None]
+            avg_rssi = int(sum(valid) / len(valid)) if valid else None
+
+            mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
+
+            log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={int(lifetime)}秒")
+
+    log(f"STA数: {len(sta_records)}")
+    log("================================")
+
+def generate_timeline():
+    import numpy as np
+
+    session_file = "sessions.csv"
+
+    if not os.path.exists(session_file):
+        log("[Timeline] sessionデータがありません")
         return
 
-    df = pd.DataFrame(rows)
+    log(f"[Timeline] 使用データ: {session_file}")
+
+    df = pd.read_csv(session_file)
+
+    df["start"] = pd.to_datetime(df["start"])
+
+    if exclude_zero_var.get():
+        df = df[df["duration"] >= 5]
+
+    if df.empty:
+        log("[Timeline] 表示できるMAC無し")
+        return
 
     df = df.sort_values("duration", ascending=False)
 
@@ -278,17 +247,10 @@ def generate_timeline():
     fig_height = max(6, len(df) * 0.4)
     fig, ax = plt.subplots(figsize=(12, fig_height))
 
-    # =========================
-    # ★ 色をMACごとに固定
-    # =========================
+    # 色固定
     unique_macs = df["mac"].unique()
-    color_map = {}
-    for mac in unique_macs:
-        color_map[mac] = np.random.rand(3,)
+    color_map = {mac: np.random.rand(3,) for mac in unique_macs}
 
-    # =========================
-    # ★ 描画
-    # =========================
     for _, row in df.iterrows():
         start_sec = (row["start"] - base_time).total_seconds()
         ax.barh(
@@ -301,9 +263,7 @@ def generate_timeline():
     from matplotlib.ticker import FuncFormatter, MultipleLocator
 
     def sec_to_minsec(x, pos):
-        m = int(x // 60)
-        s = int(x % 60)
-        return f"{m}:{s:02d}"
+        return f"{int(x//60)}:{int(x%60):02d}"
 
     ax.xaxis.set_major_formatter(FuncFormatter(sec_to_minsec))
     ax.set_xlim(0, time_var.get() * 60)
@@ -313,28 +273,13 @@ def generate_timeline():
     ax.set_ylabel("MAC")
     ax.set_title(f"WiFi STA Presence Timeline ({time_var.get()} min measurement)")
 
-    ax.text(
-        0.99, 0.01,
-        f"Measurement: {time_var.get()} min",
-        transform=ax.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=10,
-        color="gray"
-    )
-
     ax.grid(axis="x", linestyle="--", alpha=0.3)
-    ax.tick_params(axis='y', labelsize=8)
 
     plt.tight_layout()
 
-    out = "wifi_timeline.png"
-    plt.savefig(out)
+    plt.show()
 
     log(f"[Timeline] MAC数: {len(df)}")
-    log(f"[Timeline] 保存 → {out}")
-
-    plt.show()
 
 def start_capture():
     global tcpdump_proc
