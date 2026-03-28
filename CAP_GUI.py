@@ -193,30 +193,44 @@ def extract_macs(pcap_file):
 
     log(f"[Session保存] → {session_file}")
 
-    # ===== 既存ログ処理（そのまま）=====
+    # ===== 既存ログ処理 =====
     if mode == "multi":
         for mac, data in sta_records.items():
             lifetime = (data["last"] - data["first"]).total_seconds()
+
+            if lifetime >= 1:
+                lifetime_str = f"{int(lifetime)}秒"
+            else:
+                lifetime_str = f"{lifetime:.2f}秒"
+                
             mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
 
             for r in data["rssi_list"]:
-                log(f"STA {mac} [{mac_type}] RSSI={r} lifetime={int(lifetime)}秒")
+                log(f"STA {mac} [{mac_type}] RSSI={r} lifetime={lifetime_str}")
     else:
         for mac, data in sta_records.items():
             lifetime = (data["last"] - data["first"]).total_seconds()
+
+            if lifetime >= 1:
+                lifetime_str = f"{int(lifetime)}秒"
+            else:
+                lifetime_str = f"{lifetime:.2f}秒"
 
             valid = [r for r in data["rssi_list"] if r is not None]
             avg_rssi = int(sum(valid) / len(valid)) if valid else None
 
             mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
 
-            log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={int(lifetime)}秒")
+            log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={lifetime_str}")
 
     log(f"STA数: {len(sta_records)}")
     log("================================")
 
 def generate_timeline():
     import numpy as np
+    import matplotlib.pyplot as plt
+    
+    plt.close("all")
 
     session_file = "sessions.csv"
 
@@ -227,11 +241,13 @@ def generate_timeline():
     log(f"[Timeline] 使用データ: {session_file}")
 
     df = pd.read_csv(session_file)
-
     df["start"] = pd.to_datetime(df["start"])
 
+    # ★ここ変更（CSVを使い回してフィルタだけ変える）
     if exclude_zero_var.get():
-        df = df[df["duration"] > 0]
+        df = df[df["duration"] >= 1]   # ほぼ0秒除外
+    else:
+        df = df[df["duration"] > 0]    # 完全0秒だけ除外
 
     if df.empty:
         log("[Timeline] 表示できるMAC無し")
@@ -247,15 +263,18 @@ def generate_timeline():
     fig_height = max(6, len(df) * 0.4)
     fig, ax = plt.subplots(figsize=(12, fig_height))
 
-    # 色固定
     unique_macs = df["mac"].unique()
     color_map = {mac: np.random.rand(3,) for mac in unique_macs}
 
     for _, row in df.iterrows():
         start_sec = (row["start"] - base_time).total_seconds()
+
+        # ★見えない問題対策（細い線出す）
+        width = max(row["duration"], 0.3)
+
         ax.barh(
             row["mac"],
-            row["duration"],
+            width,
             left=start_sec,
             color=color_map[row["mac"]]
         )
@@ -276,7 +295,6 @@ def generate_timeline():
     ax.grid(axis="x", linestyle="--", alpha=0.3)
 
     plt.tight_layout()
-
     plt.show()
 
     log(f"[Timeline] MAC数: {len(df)}")
@@ -405,5 +423,11 @@ log_text = tk.Text(log_frame, height=12)
 log_text.pack(fill="both")
 
 tk.Button(root, text="終了", fg="red", command=stop_and_exit).pack(pady=15)
+
+def auto_update(*args):
+    if os.path.exists("sessions.csv"):
+        generate_timeline()
+
+exclude_zero_var.trace_add("write", auto_update)
 
 root.mainloop()
