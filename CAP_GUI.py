@@ -22,6 +22,7 @@ tcpdump_proc = None
 selected_channel = None
 ap_bssid_set = set()
 running = True
+current_fig = None
 
 def is_local_mac(mac):
     first_byte = int(mac.split(":")[0], 16)
@@ -230,6 +231,8 @@ def extract_macs(pcap_file):
     log("================================")
 
 def generate_timeline():
+    global current_fig
+
     import numpy as np
     import matplotlib.pyplot as plt
     
@@ -265,6 +268,9 @@ def generate_timeline():
 
     fig_height = max(6, len(df) * 0.4)
     fig, ax = plt.subplots(figsize=(12, fig_height))
+
+    # ★ ここ追加（現在のグラフを保持）
+    current_fig = fig
 
     unique_macs = df["mac"].unique()
     color_map = {mac: np.random.rand(3,) for mac in unique_macs}
@@ -309,6 +315,7 @@ def generate_timeline():
     ax.set_ylabel("MAC")
     ax.set_title(f"WiFi STA Presence Timeline ({time_var.get()} min measurement)")
 
+    # ★ LOCALだけ赤字
     for label in ax.get_yticklabels():
         mac = label.get_text()
         if is_local_mac(mac):
@@ -322,7 +329,8 @@ def generate_timeline():
     log(f"[Timeline] MAC数: {len(df)}")
 
 def start_capture():
-    global tcpdump_proc
+    global tcpdump_proc, current_fig
+    current_fig = None
 
     if selected_channel is None:
         messagebox.showwarning("警告", "AP選択またはチャネル入力")
@@ -371,6 +379,27 @@ def stop_and_exit():
     plt.close("all") 
     root.destroy()
 
+def save_graph():
+    global current_fig
+
+    if current_fig is None:
+        messagebox.showwarning("警告", "先にグラフを生成してください")
+        return
+
+    BASE_DIR = "/home/hatake/デスクトップ"
+
+    duration = time_var.get()
+    folder_name = f"MAC_{duration}m"
+    save_dir = os.path.join(BASE_DIR, folder_name)
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(save_dir, f"timeline_{now_str}.png")
+
+    current_fig.savefig(filepath)
+    log(f"[保存] {filepath}")
+    
 root = tk.Tk()
 root.title("MAC_GUI")
 
@@ -440,6 +469,8 @@ start_btn.pack(pady=5)
 
 tk.Button(root, text="③ 滞在時間グラフ生成", command=generate_timeline).pack(pady=5)
 
+tk.Button(root, text="④ グラフ保存", command=save_graph).pack(pady=5)
+
 status_label = tk.Label(root, text="待機中")
 status_label.pack()
 
@@ -449,11 +480,5 @@ log_text = tk.Text(log_frame, height=12)
 log_text.pack(fill="both")
 
 tk.Button(root, text="終了", fg="red", command=stop_and_exit).pack(pady=15)
-
-def auto_update(*args):
-    if os.path.exists("sessions.csv"):
-        generate_timeline()
-
-exclude_zero_var.trace_add("write", auto_update)
 
 root.mainloop()
