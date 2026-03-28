@@ -295,6 +295,11 @@ def generate_timeline():
     ax.set_ylabel("MAC")
     ax.set_title(f"WiFi STA Presence Timeline ({time_var.get()} min measurement)")
 
+    for label in ax.get_yticklabels():
+        mac = label.get_text()
+        if is_local_mac(mac):
+            label.set_color("red")
+        
     ax.grid(axis="x", linestyle="--", alpha=0.3)
 
     plt.tight_layout()
