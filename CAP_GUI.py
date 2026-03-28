@@ -47,8 +47,14 @@ if not os.path.exists(CSV_FILE):
 def log(msg):
     if not running:
         return
-    log_text.insert(tk.END, msg + "\n")
-    log_text.see(tk.END)
+    if not root.winfo_exists():
+        return
+
+    def _update():
+        log_text.insert(tk.END, msg + "\n")
+        log_text.see(tk.END)
+
+    root.after(0, _update)
 
 def save_csv(timestamp, mac_type, mac, rssi, ch):
     with open(CSV_FILE, "a", newline="") as f:
@@ -239,6 +245,7 @@ def generate_timeline():
     plt.close("all")
 
     session_file = "sessions.csv"
+    TARGET_MAC = "50:a6:d8:7e:d7:c2"
 
     if not os.path.exists(session_file):
         log("[Timeline] sessionデータがありません")
@@ -269,7 +276,6 @@ def generate_timeline():
     fig_height = max(6, len(df) * 0.4)
     fig, ax = plt.subplots(figsize=(12, fig_height))
 
-    # ★ ここ追加（現在のグラフを保持）
     current_fig = fig
 
     unique_macs = df["mac"].unique()
@@ -291,9 +297,8 @@ def generate_timeline():
                 zorder=3
             )
         else:
-            # ★ 通常は棒
             width = max(row["duration"], 0.3)
-
+            color = "red" if is_local_mac(mac) else "black"
             ax.barh(
                 mac,
                 width,
@@ -320,6 +325,10 @@ def generate_timeline():
         mac = label.get_text()
         if is_local_mac(mac):
             label.set_color("red")
+    
+    for label in ax.get_yticklabels():
+        if label.get_text().lower() == TARGET_MAC:
+            label.set_color("limegreen")
         
     ax.grid(axis="x", linestyle="--", alpha=0.3)
 
@@ -358,25 +367,41 @@ def start_capture():
     status_label.config(text="キャプチャ中")
     start_btn.config(state="disabled")
 
-    threading.Thread(target=wait_and_finish, args=(pcap_file,), daemon=True).start()
+    threading.Thread(
+        target=wait_and_finish,
+        args=(pcap_file,),
+        daemon=False 
+    ).start()
 
 def wait_and_finish(pcap_file):
     global tcpdump_proc
+
     tcpdump_proc.wait()
+
     log("[Capture] 完了")
+
     extract_macs(pcap_file)
-    status_label.config(text="完了")
-    start_btn.config(state="normal")
+
+    if root.winfo_exists():
+        root.after(0, lambda: status_label.config(text="完了"))
+        root.after(0, lambda: start_btn.config(state="normal"))
 
 def stop_and_exit():
     global tcpdump_proc, running
+
     running = False
-    
+
     if tcpdump_proc and tcpdump_proc.poll() is None:
         tcpdump_proc.terminate()
         tcpdump_proc.wait()
-    
-    plt.close("all") 
+
+    plt.close("all")
+
+    try:
+        root.quit()   # mainloopを安全に抜ける
+    except:
+        pass
+
     root.destroy()
 
 def save_graph():
@@ -403,7 +428,6 @@ def save_graph():
 root = tk.Tk()
 root.title("MAC_GUI")
 
-rssi_estimate_var = tk.BooleanVar(value=False)
 time_var = tk.IntVar(value=5)
 mac_mode = tk.StringVar(value="unique")
 exclude_zero_var = tk.BooleanVar(value=True)
@@ -455,10 +479,6 @@ mac_frame = tk.LabelFrame(option_frame, text="MAC表示")
 mac_frame.pack(side="left", padx=5)
 tk.Radiobutton(mac_frame, text="重複削除", variable=mac_mode, value="unique").pack(anchor="w")
 tk.Radiobutton(mac_frame, text="複数表示", variable=mac_mode, value="multi").pack(anchor="w")
-
-estimate_frame = tk.LabelFrame(option_frame, text="RSSI推定")
-estimate_frame.pack(side="left", padx=5)
-tk.Checkbutton(estimate_frame, text="RSSI人数推定をログ表示", variable=rssi_estimate_var).pack(anchor="w")
 
 exclude_frame = tk.Frame(root)
 exclude_frame.pack(pady=5)
