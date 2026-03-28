@@ -271,16 +271,30 @@ def generate_timeline():
 
     for _, row in df.iterrows():
         start_sec = (row["start"] - base_time).total_seconds()
+        mac = row["mac"]
 
-        # ★見えない問題対策（細い線出す）
-        width = max(row["duration"], 0.3)
+        if row["duration"] == 0:
+            # ★ 0秒 → 点で表示
+            color = "red" if is_local_mac(mac) else "black"
 
-        ax.barh(
-            row["mac"],
-            width,
-            left=start_sec,
-            color=color_map[row["mac"]]
-        )
+            ax.scatter(
+                start_sec,
+                mac,
+                color=color,
+                s=25,
+                zorder=3
+            )
+        else:
+            # ★ 通常は棒
+            width = max(row["duration"], 0.3)
+
+            ax.barh(
+                mac,
+                width,
+                left=start_sec,
+                color=color_map[mac],
+                zorder=2
+            )
 
     from matplotlib.ticker import FuncFormatter, MultipleLocator
 
