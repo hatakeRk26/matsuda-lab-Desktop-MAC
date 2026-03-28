@@ -204,7 +204,7 @@ def extract_macs(pcap_file):
             if lifetime >= 1:
                 lifetime_str = f"{int(lifetime)}秒"
             else:
-                lifetime_str = f"{lifetime:.2f}秒"
+                lifetime_str = f"{lifetime:.4f}秒"
                 
             mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
 
@@ -217,7 +217,7 @@ def extract_macs(pcap_file):
             if lifetime >= 1:
                 lifetime_str = f"{int(lifetime)}秒"
             else:
-                lifetime_str = f"{lifetime:.2f}秒"
+                lifetime_str = f"{lifetime:.4f}秒"
 
             valid = [r for r in data["rssi_list"] if r is not None]
             avg_rssi = int(sum(valid) / len(valid)) if valid else None
