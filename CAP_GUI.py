@@ -21,6 +21,7 @@ GAP_THRESHOLD = 30
 tcpdump_proc = None
 selected_channel = None
 ap_bssid_set = set()
+running = True
 
 def is_local_mac(mac):
     first_byte = int(mac.split(":")[0], 16)
@@ -43,6 +44,8 @@ if not os.path.exists(CSV_FILE):
         writer.writerow(["timestamp","type","mac","rssi","channel"])
 
 def log(msg):
+    if not running:
+        return
     log_text.insert(tk.END, msg + "\n")
     log_text.see(tk.END)
 
@@ -243,11 +246,11 @@ def generate_timeline():
     df = pd.read_csv(session_file)
     df["start"] = pd.to_datetime(df["start"])
 
-    # ★ここ変更（CSVを使い回してフィルタだけ変える）
+    # CSVを使い回してフィルタだけ変える
     if exclude_zero_var.get():
-        df = df[df["duration"] >= 1]   # ほぼ0秒除外
+        df = df[df["duration"] > 0]   
     else:
-        df = df[df["duration"] > 0]    # 完全0秒だけ除外
+        df = df[df["duration"] >= 0]
 
     if df.empty:
         log("[Timeline] 表示できるMAC無し")
@@ -339,10 +342,14 @@ def wait_and_finish(pcap_file):
     start_btn.config(state="normal")
 
 def stop_and_exit():
-    global tcpdump_proc
+    global tcpdump_proc, running
+    running = False
+    
     if tcpdump_proc and tcpdump_proc.poll() is None:
         tcpdump_proc.terminate()
         tcpdump_proc.wait()
+    
+    plt.close("all") 
     root.destroy()
 
 root = tk.Tk()
