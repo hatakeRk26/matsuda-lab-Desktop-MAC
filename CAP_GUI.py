@@ -48,18 +48,27 @@ if not os.path.exists(CSV_FILE):
 def log(msg):
     if not running:
         return
-    if not root.winfo_exists():
+
+    try:
+        if not root.winfo_exists():
+            return
+    except:
         return
 
     def _update():
-        if TARGET_MAC in msg.lower():
-            log_text.insert(tk.END, msg + "\n", "green_mac")
-        else:
-            log_text.insert(tk.END, msg + "\n")
+        try:
+            if TARGET_MAC in msg.lower():
+                log_text.insert(tk.END, msg + "\n", "green_mac")
+            else:
+                log_text.insert(tk.END, msg + "\n")
+            log_text.see(tk.END)
+        except:
+            pass  # ← UI消えてても落ちない
 
-        log_text.see(tk.END)
-
-    root.after(0, _update)
+    try:
+        root.after(0, _update)
+    except:
+        pass
 
 def save_csv(timestamp, mac_type, mac, rssi, ch):
     with open(CSV_FILE, "a", newline="") as f:
@@ -272,8 +281,8 @@ def generate_timeline():
 
     df = df.sort_values("duration", ascending=False)
 
-    if len(df) > 40:
-        df = df.head(40)
+    #if len(df) > 40:
+    #    df = df.head(40)
 
     base_time = df["start"].min()
 
@@ -374,7 +383,7 @@ def start_capture():
     threading.Thread(
         target=wait_and_finish,
         args=(pcap_file,),
-        daemon=False 
+        daemon=True #フラグで止める
     ).start()
 
 def wait_and_finish(pcap_file):
@@ -401,12 +410,12 @@ def stop_and_exit():
 
     plt.close("all")
 
+    # すぐdestroyしない（超重要）
     try:
-        root.quit()   # mainloopを安全に抜ける
+        root.after(0, root.quit)
+        root.after(200, root.destroy)
     except:
         pass
-
-    root.destroy()
 
 def save_graph():
     global current_fig
