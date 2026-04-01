@@ -411,6 +411,9 @@ def stop_and_exit():
 def save_graph():
     global current_fig
 
+    import os
+    import getpass
+
     if current_fig is None:
         messagebox.showwarning("警告", "先にグラフを生成してください")
         return
@@ -423,10 +426,20 @@ def save_graph():
 
     os.makedirs(save_dir, exist_ok=True)
 
+    user = getpass.getuser()
+
+    # ★ フォルダの所有者も変更
+    os.system(f"sudo chown -R {user}:{user} '{save_dir}'")
+
     now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = os.path.join(save_dir, f"timeline_{now_str}.png")
 
     current_fig.savefig(filepath)
+
+    # ★ ファイルも念のため
+    os.system(f"sudo chown {user}:{user} '{filepath}'")
+    os.chmod(filepath, 0o644)
+
     log(f"[保存] {filepath}")
     
 root = tk.Tk()
@@ -545,8 +558,6 @@ def search_log(*args):
 
         end = f"{pos}+{len(keyword)}c"
         log_text.tag_add("highlight", pos, end)
-
-        match_positions.append(pos) 
 
         start = end
 
