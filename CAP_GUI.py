@@ -16,6 +16,7 @@ BEACON_PCAP = "beacon_scan.pcap"
 BEACON_TIME = 10
 CSV_FILE = "wifi_observe.csv"
 GAP_THRESHOLD = 30
+TARGET_MAC = "50:a6:d8:7e:d7:c2"
 # ========================
 
 tcpdump_proc = None
@@ -51,7 +52,11 @@ def log(msg):
         return
 
     def _update():
-        log_text.insert(tk.END, msg + "\n")
+        if TARGET_MAC in msg.lower():
+            log_text.insert(tk.END, msg + "\n", "green_mac")
+        else:
+            log_text.insert(tk.END, msg + "\n")
+
         log_text.see(tk.END)
 
     root.after(0, _update)
@@ -245,7 +250,6 @@ def generate_timeline():
     plt.close("all")
 
     session_file = "sessions.csv"
-    TARGET_MAC = "50:a6:d8:7e:d7:c2"
 
     if not os.path.exists(session_file):
         log("[Timeline] sessionデータがありません")
@@ -475,6 +479,7 @@ for i, t in enumerate(times):
 # 列幅を均等にする
 for i in range(3):
     time_frame.grid_columnconfigure(i, weight=1)
+
 mac_frame = tk.LabelFrame(option_frame, text="MAC表示")
 mac_frame.pack(side="left", padx=5)
 tk.Radiobutton(mac_frame, text="重複削除", variable=mac_mode, value="unique").pack(anchor="w")
@@ -484,21 +489,74 @@ exclude_frame = tk.Frame(root)
 exclude_frame.pack(pady=5)
 tk.Checkbutton(exclude_frame, text="滞在時間0秒のMACを除外", variable=exclude_zero_var).pack(anchor="w")
 
-start_btn = tk.Button(root, text="② キャプチャ開始", command=start_capture, state="disabled")
+# ===== 横並びの親フレーム =====
+main_frame = tk.Frame(root)
+main_frame.pack(pady=5)
+
+left_frame = tk.Frame(main_frame)
+left_frame.pack(side="left", padx=10)
+
+right_frame = tk.Frame(main_frame)
+right_frame.pack(side="left", padx=20, anchor="n")
+
+# ===== 左：ボタン（←ここ重要）=====
+start_btn = tk.Button(left_frame, text="② キャプチャ開始", command=start_capture, state="disabled")
 start_btn.pack(pady=5)
 
-tk.Button(root, text="③ 滞在時間グラフ生成", command=generate_timeline).pack(pady=5)
+tk.Button(left_frame, text="③ 滞在時間グラフ生成", command=generate_timeline).pack(pady=5)
 
-tk.Button(root, text="④ グラフ保存", command=save_graph).pack(pady=5)
+tk.Button(left_frame, text="④ グラフ保存", command=save_graph).pack(pady=5)
 
+# ===== 右：検索UI（リアルタイム）=====
+search_var = tk.StringVar()
+
+tk.Label(right_frame, text="ログ検索").pack()
+# ===== ステータス =====
 status_label = tk.Label(root, text="待機中")
 status_label.pack()
 
+# ===== ログ表示 =====
 log_frame = tk.LabelFrame(root, text="ログ")
 log_frame.pack(padx=10, pady=5, fill="both")
+
 log_text = tk.Text(log_frame, height=12)
 log_text.pack(fill="both")
 
+# 色設定
+log_text.tag_config("green_mac", foreground="limegreen")
+log_text.tag_config("highlight", background="yellow")
+
+# ===== リアルタイム検索 =====
+def search_log(*args):
+    keyword = search_var.get()
+
+    log_text.tag_remove("highlight", "1.0", tk.END)
+
+    if not keyword:
+        return
+
+    start = "1.0"
+
+    while True:
+        pos = log_text.search(keyword, start, stopindex=tk.END, nocase=True)
+
+        if not pos:
+            break
+
+        end = f"{pos}+{len(keyword)}c"
+        log_text.tag_add("highlight", pos, end)
+
+        match_positions.append(pos) 
+
+        start = end
+
+# 入力で即検索
+search_var.trace_add("write", search_log)
+    
+entry = tk.Entry(right_frame, textvariable=search_var, width=25)
+entry.pack(pady=5)
+
+# ===== 終了ボタン =====
 tk.Button(root, text="終了", fg="red", command=stop_and_exit).pack(pady=15)
 
 root.mainloop()
