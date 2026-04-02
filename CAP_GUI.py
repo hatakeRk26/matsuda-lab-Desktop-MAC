@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 import subprocess
 import threading
-from scapy.all import rdpcap, Dot11, Dot11Elt
+from scapy.all import rdpcap, Dot11, Dot11Elt, PcapReader
 import os
 import csv
 from datetime import datetime
@@ -70,16 +70,16 @@ def log(msg):
     except:
         pass
 
-def save_csv(timestamp, mac_type, mac, rssi, ch):
-    with open(CSV_FILE, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            timestamp.strftime("%Y-%m-%d %H:%M:%S.%f"),
-            mac_type,
-            mac,
-            rssi,
-            ch
-        ])
+#def save_csv(timestamp, mac_type, mac, rssi, ch):
+#    with open(CSV_FILE, "a", newline="") as f:
+#       writer = csv.writer(f)
+#        writer.writerow([
+#            timestamp.strftime("%Y-%m-%d %H:%M:%S.%f"),
+#            mac_type,
+#            mac,
+#            rssi,
+#            ch
+#        ])
 
 def capture_beacons():
     if os.path.exists(BEACON_PCAP):
@@ -96,34 +96,42 @@ def analyze_beacons():
     if not os.path.exists(BEACON_PCAP):
         log("[解析] pcapがありません")
         return
-    packets = rdpcap(BEACON_PCAP)
+
     seen = set()
-    for pkt in packets:
-        if not pkt.haslayer(Dot11):
-            continue
-        d = pkt[Dot11]
-        if d.type != 0 or d.subtype != 8:
-            continue
-        ssid = None
-        ch = None
-        bssid = d.addr2
-        elt = pkt.getlayer(Dot11Elt)
-        while elt:
-            if elt.ID == 0 and elt.info:
-                ssid = elt.info.decode(errors="ignore")
-            elif elt.ID == 3 and elt.info:
-                ch = elt.info[0]
-            elt = elt.payload.getlayer(Dot11Elt)
-        if ssid and ch:
-            key = (ssid, ch)
-            if key not in seen:
-                seen.add(key)
-                ap_info.append(key)
-                if bssid:
-                    ap_bssid_set.add(bssid)
+
+    with PcapReader(BEACON_PCAP) as packets:   # ★変更
+        for pkt in packets:
+            if not pkt.haslayer(Dot11):
+                continue
+
+            d = pkt[Dot11]
+            if d.type != 0 or d.subtype != 8:
+                continue
+
+            ssid = None
+            ch = None
+            bssid = d.addr2
+
+            elt = pkt.getlayer(Dot11Elt)
+            while elt:
+                if elt.ID == 0 and elt.info:
+                    ssid = elt.info.decode(errors="ignore")
+                elif elt.ID == 3 and elt.info:
+                    ch = elt.info[0]
+                elt = elt.payload.getlayer(Dot11Elt)
+
+            if ssid and ch:
+                key = (ssid, ch)
+                if key not in seen:
+                    seen.add(key)
+                    ap_info.append(key)
+                    if bssid:
+                        ap_bssid_set.add(bssid)
+
     ap_list.delete(0, tk.END)
     for ssid, ch in sorted(ap_info, key=lambda x: (x[1], x[0])):
         ap_list.insert(tk.END, f"CH {ch} | {ssid}")
+
     log(f"[解析] 検出AP数: {len(ap_info)}")
 
 def scan_beacons():
@@ -144,28 +152,32 @@ def on_ap_select(event):
     channel_label.config(text=f"選択中チャネル: CH {ch}")
     start_btn.config(state="normal")
 
+from scapy.all import PcapReader
+
 def extract_macs(pcap_file):
 
     if not os.path.exists(pcap_file):
         log("[MAC抽出] pcap無し")
         return
 
-    packets = rdpcap(pcap_file)
-
     mode = mac_mode.get()
     sta_records = {}
     sta_sessions = {}
 
+    csv_buffer = []   # ★追加（CSVまとめ用）
+
     log("========== MAC + RSSI ==========")
 
-    for pkt in packets:
+    with PcapReader(pcap_file) as packets:   # ★変更（超重要）
+        for pkt in packets:
 
-        if not pkt.haslayer(Dot11):
-            continue
+            if not pkt.haslayer(Dot11):
+                continue
 
-        dot11 = pkt[Dot11]
+            dot11 = pkt[Dot11]
 
-        if dot11.type == 0 and dot11.subtype == 4:
+            if dot11.type != 0 or dot11.subtype != 4:
+                continue
 
             if not dot11.addr2:
                 continue
@@ -175,36 +187,54 @@ def extract_macs(pcap_file):
             if mac in ap_bssid_set:
                 continue
 
-            pkt_time = datetime.fromtimestamp(float(pkt.time))
+            # ★高速化：floatで保持
+            pkt_time = float(pkt.time)
             rssi = getattr(pkt, "dBm_AntSignal", None)
 
-            save_csv(pkt_time, "STA", mac, rssi, selected_channel)
+            # ★CSVは貯めるだけ
+            csv_buffer.append([
+                datetime.fromtimestamp(pkt_time).strftime("%Y-%m-%d %H:%M:%S.%f"),
+                "STA",
+                mac,
+                rssi,
+                selected_channel
+            ])
 
             # ===== lifetime用 =====
             if mac not in sta_records:
                 sta_records[mac] = {
                     "first": pkt_time,
                     "last": pkt_time,
-                    "rssi_list": []
+                    "rssi_sum": 0,
+                    "rssi_count": 0
                 }
             else:
                 sta_records[mac]["last"] = pkt_time
 
-            sta_records[mac]["rssi_list"].append(rssi)
+            if rssi is not None:
+                sta_records[mac]["rssi_sum"] += rssi
+                sta_records[mac]["rssi_count"] += 1
 
-            # ===== セッション生成（ここ追加）=====
+            # ===== セッション生成 =====
             if mac not in sta_sessions:
                 sta_sessions[mac] = [[pkt_time, pkt_time]]
             else:
                 last_session = sta_sessions[mac][-1]
-                gap = (pkt_time - last_session[1]).total_seconds()
+                gap = pkt_time - last_session[1]
 
                 if gap <= GAP_THRESHOLD:
                     last_session[1] = pkt_time
                 else:
                     sta_sessions[mac].append([pkt_time, pkt_time])
 
-    # ===== セッションCSV保存（追加）=====
+    # ★CSVまとめ書き（超重要）
+    with open(CSV_FILE, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(csv_buffer)
+
+    log(f"[CSV書き込み] {len(csv_buffer)}件")
+
+    # ===== セッションCSV =====
     session_file = "sessions.csv"
     with open(session_file, "w", newline="") as f:
         writer = csv.writer(f)
@@ -212,54 +242,47 @@ def extract_macs(pcap_file):
 
         for mac, sessions in sta_sessions.items():
             for start, end in sessions:
-                duration = (end - start).total_seconds()
-                writer.writerow([mac, start, end, duration])
+                duration = end - start
+                writer.writerow([
+                    mac,
+                    datetime.fromtimestamp(start),
+                    datetime.fromtimestamp(end),
+                    duration
+                ])
 
     log(f"[Session保存] → {session_file}")
 
-    # ===== 既存ログ処理 =====
-    if mode == "multi":
-        for mac, data in sta_records.items():
-            lifetime = (data["last"] - data["first"]).total_seconds()
+    # ===== ログ出力（平均RSSI復活）=====
+    for mac, data in sta_records.items():
+        lifetime = data["last"] - data["first"]
 
-            if lifetime >= 1:
-                lifetime_str = f"{int(lifetime)}秒"
-            else:
-                lifetime_str = f"{lifetime:.4f}秒"
-                
-            mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
+        if lifetime >= 1:
+            lifetime_str = f"{int(lifetime)}秒"
+        else:
+            lifetime_str = f"{lifetime:.4f}秒"
 
-            for r in data["rssi_list"]:
-                log(f"STA {mac} [{mac_type}] RSSI={r} lifetime={lifetime_str}")
-    else:
-        for mac, data in sta_records.items():
-            lifetime = (data["last"] - data["first"]).total_seconds()
+        # ★平均RSSI復活（軽量版）
+        if data["rssi_count"] > 0:
+            avg_rssi = int(data["rssi_sum"] / data["rssi_count"])
+        else:
+            avg_rssi = None
 
-            if lifetime >= 1:
-                lifetime_str = f"{int(lifetime)}秒"
-            else:
-                lifetime_str = f"{lifetime:.4f}秒"
+        mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
 
-            valid = [r for r in data["rssi_list"] if r is not None]
-            avg_rssi = int(sum(valid) / len(valid)) if valid else None
-
-            mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
-
-            log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={lifetime_str}")
+        log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={lifetime_str}")
 
     log(f"STA数: {len(sta_records)}")
     log("================================")
 
 def generate_timeline():
     global current_fig
-
     import numpy as np
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter, MultipleLocator
     
     plt.close("all")
 
     session_file = "sessions.csv"
-
     if not os.path.exists(session_file):
         log("[Timeline] sessionデータがありません")
         return
@@ -269,7 +292,7 @@ def generate_timeline():
     df = pd.read_csv(session_file)
     df["start"] = pd.to_datetime(df["start"])
 
-    # CSVを使い回してフィルタだけ変える
+    # 滞在時間0秒の除外設定
     if exclude_zero_var.get():
         df = df[df["duration"] > 0]   
     else:
@@ -279,76 +302,145 @@ def generate_timeline():
         log("[Timeline] 表示できるMAC無し")
         return
 
+    # 滞在時間が長い順に並べる（グラフの下から上に並ぶ）
     df = df.sort_values("duration", ascending=False)
-
-    #if len(df) > 40:
-    #    df = df.head(40)
 
     base_time = df["start"].min()
 
-    fig_height = max(6, len(df) * 0.4)
+    # グラフの高さ調整
+    unique_mac_count = len(df["mac"].unique())
+    fig_height = max(6, unique_mac_count * 0.4)
     fig, ax = plt.subplots(figsize=(12, fig_height))
-
     current_fig = fig
-
-    unique_macs = df["mac"].unique()
-    color_map = {mac: np.random.rand(3,) for mac in unique_macs}
 
     for _, row in df.iterrows():
         start_sec = (row["start"] - base_time).total_seconds()
         mac = row["mac"]
+        
+        # --- 色の判定ロジック ---
+        if mac.lower() == TARGET_MAC.lower():
+            plot_color = "limegreen"  # 特定MAC（緑）
+            z_order = 5               # 最前面に表示
+        elif is_local_mac(mac):
+            plot_color = "red"        # ローカルMAC（赤）
+            z_order = 2
+        else:
+            plot_color = "black"      # グローバルMAC（黒）
+            z_order = 3
+        # ----------------------
 
         if row["duration"] == 0:
-            # ★ 0秒 → 点で表示
-            color = "red" if is_local_mac(mac) else "black"
-
+            # 0秒（一瞬だけ観測）は点で表示
             ax.scatter(
                 start_sec,
                 mac,
-                color=color,
-                s=25,
-                zorder=3
+                color=plot_color,
+                s=30,
+                zorder=z_order,
+                alpha=0.7
             )
         else:
-            width = max(row["duration"], 0.3)
-            color = "red" if is_local_mac(mac) else "black"
+            # 滞在時間は棒グラフで表示
+            width = max(row["duration"], 0.5) # 見やすくするため最小幅を設定
             ax.barh(
                 mac,
                 width,
                 left=start_sec,
-                color=color_map[mac],
-                zorder=2
+                color=plot_color,
+                zorder=z_order,
+                height=0.6,
+                alpha=0.8
             )
 
-    from matplotlib.ticker import FuncFormatter, MultipleLocator
-
+    # 軸の設定
     def sec_to_minsec(x, pos):
         return f"{int(x//60)}:{int(x%60):02d}"
 
     ax.xaxis.set_major_formatter(FuncFormatter(sec_to_minsec))
     ax.set_xlim(0, time_var.get() * 60)
-    ax.xaxis.set_major_locator(MultipleLocator(60))
+    ax.xaxis.set_major_locator(MultipleLocator(60)) # 1分刻み
 
     ax.set_xlabel("Elapsed Time (mm:ss)")
-    ax.set_ylabel("MAC")
+    ax.set_ylabel("MAC Address")
     ax.set_title(f"WiFi STA Presence Timeline ({time_var.get()} min measurement)")
 
-    # ★ LOCALだけ赤字
+    # Y軸（MACアドレス名）の色設定
     for label in ax.get_yticklabels():
-        mac = label.get_text()
-        if is_local_mac(mac):
-            label.set_color("red")
-    
-    for label in ax.get_yticklabels():
-        if label.get_text().lower() == TARGET_MAC:
+        mac_label = label.get_text()
+        if mac_label.lower() == TARGET_MAC.lower():
             label.set_color("limegreen")
-        
+            label.set_weight("bold") # ターゲットは太字に
+        elif is_local_mac(mac_label):
+            label.set_color("red")
+        else:
+            label.set_color("black")
+    
     ax.grid(axis="x", linestyle="--", alpha=0.3)
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+    plt.show()
+
+    log(f"[Timeline] 表示MAC数: {unique_mac_count}")
+    
+def generate_target_rssi_graph():
+    """特定MACアドレスのRSSI推移グラフを生成する"""
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    if not os.path.exists(CSV_FILE):
+        log("[RSSI分析] CSVデータがありません")
+        return
+
+    # データの読み込み
+    df = pd.read_csv(CSV_FILE)
+    
+    # ターゲットMACでフィルタリング (大文字小文字を区別しない)
+    target_df = df[df["mac"].str.lower() == TARGET_MAC.lower()].copy()
+
+    if target_df.empty:
+        log(f"[RSSI分析] {TARGET_MAC} のデータが見つかりません")
+        return
+
+    # タイムスタンプの変換
+    target_df["timestamp"] = pd.to_datetime(target_df["timestamp"])
+    target_df = target_df.sort_values("timestamp")
+
+    # 経過時間（秒）の計算
+    base_time = pd.to_datetime(df["timestamp"]).min()
+    target_df["elapsed_sec"] = (target_df["timestamp"] - base_time).dt.total_seconds()
+
+    # 移動平均の計算（窓サイズ5：状況に合わせて調整）
+    target_df["rssi_smooth"] = target_df["rssi"].rolling(window=5, min_periods=1, center=True).mean()
+
+    # グラフ作成
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # 生データ（点）
+    ax.scatter(target_df["elapsed_sec"], target_df["rssi"], 
+               color="gray", alpha=0.4, s=15, label="Raw RSSI")
+    
+    # 移動平均線（太線）
+    ax.plot(target_df["elapsed_sec"], target_df["rssi_smooth"], 
+             color="limegreen", linewidth=2, label="Moving Average (window=5)")
+
+    # 軸の設定
+    def sec_to_minsec(x, pos):
+        return f"{int(x//60)}:{int(x%60):02d}"
+    
+    ax.xaxis.set_major_formatter(FuncFormatter(sec_to_minsec))
+    ax.set_xlabel("Elapsed Time (mm:ss)")
+    ax.set_ylabel("RSSI (dBm)")
+    ax.set_title(f"RSSI Behavior Analysis: {TARGET_MAC}")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.legend()
+
+    # RSSIの一般的な範囲に固定（見やすくするため）
+    ax.set_ylim(-100, -20)
 
     plt.tight_layout()
     plt.show()
-
-    log(f"[Timeline] MAC数: {len(df)}")
+    
+    log(f"[RSSI分析] {TARGET_MAC} のグラフを表示しました")
 
 def start_capture():
     global tcpdump_proc, current_fig
@@ -416,6 +508,16 @@ def stop_and_exit():
         root.after(200, root.destroy)
     except:
         pass
+
+def run_matlab():
+    csv_path = os.path.abspath(CSV_FILE)
+
+    matlab_cmd = (
+        f"matlab -batch \"main('{csv_path}')\""
+    )
+
+    log("[MATLAB] 実行開始")
+    subprocess.Popen(matlab_cmd, shell=True)
 
 def save_graph():
     global current_fig
@@ -526,6 +628,8 @@ start_btn = tk.Button(left_frame, text="② キャプチャ開始", command=star
 start_btn.pack(pady=5)
 
 tk.Button(left_frame, text="③ 滞在時間グラフ生成", command=generate_timeline).pack(pady=5)
+
+tk.Button(left_frame, text="特定MACのRSSI解析", command=generate_target_rssi_graph, fg="darkgreen").pack(pady=5)
 
 tk.Button(left_frame, text="④ グラフ保存", command=save_graph).pack(pady=5)
 
