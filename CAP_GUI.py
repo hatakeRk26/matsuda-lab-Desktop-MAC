@@ -211,10 +211,20 @@ def generate_timeline():
     base_time = df["start"].min()
     fig, ax = plt.subplots(figsize=(13, max(6, len(unique_macs) * 0.4)))
     current_fig = fig
+    
+    # --- 【修正】グリッドとフォントサイズの設定 ---
+    ax.tick_params(axis='y', labelsize=9)  # 縦軸の文字を小さく
+    ax.xaxis.set_major_locator(MultipleLocator(60)) # 1分(60秒)ごとに目盛り
+    ax.grid(axis='x', linestyle='--', alpha=0.5)    # 1分ごとの点線
+    
     for _, row in df.iterrows():
         start_sec = (row["start"] - base_time).total_seconds()
         mac = row["mac"]
         color = "limegreen" if mac.lower() == TARGET_MAC.lower() else ("red" if is_local_mac(mac) else "black")
+         # --- 特定MACの出現時刻に垂直線を引く ---
+        if is_target:
+            ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
+            
         if row["duration"] == 0:
             ax.scatter(start_sec, mac, color=color, s=50, marker='o', zorder=5) # 丸い点表示
         else:
@@ -241,7 +251,7 @@ def generate_timeline():
     plt.show()
 
 def generate_grouped_rssi_timeline():
-    """RSSIグループ表示 (閾値 1.3dBm)"""
+    """RSSIグループ表示 (閾値 1.5dBm)"""
     global current_fig
     from matplotlib.ticker import FuncFormatter, MultipleLocator
     plt.close("all")
@@ -264,9 +274,14 @@ def generate_grouped_rssi_timeline():
     base_time = df["start"].min()
     fig, ax = plt.subplots(figsize=(13, max(6, len(sorted_macs) * 0.45)))
     current_fig = fig
+    
+   # --- 【修正】グリッドとフォントサイズの設定 ---
+    ax.tick_params(axis='y', labelsize=9)  # 縦軸の文字を小さく
+    ax.xaxis.set_major_locator(MultipleLocator(60)) # 1分(60秒)ごとに目盛り
+    ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0) # 1分ごとの点線
 
-    # RSSI閾値を1.3dBmに設定
-    THRESHOLD = 1.3
+    # RSSI閾値を1.5dBmに設定
+    THRESHOLD = 1.5
     groups, current_group = [], [sorted_macs[0]]
     for i in range(1, len(sorted_macs)):
         if abs(avg_rssi_map[sorted_macs[i-1]] - avg_rssi_map[sorted_macs[i]]) <= THRESHOLD:
