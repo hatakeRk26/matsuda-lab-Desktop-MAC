@@ -283,16 +283,18 @@ def generate_timeline():
     plt.close("all")
 
     session_file = "sessions.csv"
-    if not os.path.exists(session_file):
-        log("[Timeline] sessionデータがありません")
+    if not os.path.exists(session_file) or not os.path.exists(CSV_FILE):
+        log("[Timeline] データがありません")
         return
 
-    log(f"[Timeline] 使用データ: {session_file}")
+    # --- 平均RSSIの算出 ---
+    obs_df = pd.read_csv(CSV_FILE)
+    avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
 
+    # セッションデータの読み込み
     df = pd.read_csv(session_file)
     df["start"] = pd.to_datetime(df["start"])
 
-    # 滞在時間0秒の除外設定
     if exclude_zero_var.get():
         df = df[df["duration"] > 0]   
     else:
@@ -302,55 +304,49 @@ def generate_timeline():
         log("[Timeline] 表示できるMAC無し")
         return
 
-    # 滞在時間が長い順に並べる（グラフの下から上に並ぶ）
+    # 滞在時間が長い順に並べる
     df = df.sort_values("duration", ascending=False)
+    unique_macs = df["mac"].unique()
+    unique_mac_count = len(unique_macs)  # ★ここで変数を定義してNameErrorを回避
 
     base_time = df["start"].min()
 
     # グラフの高さ調整
-    unique_mac_count = len(df["mac"].unique())
     fig_height = max(6, unique_mac_count * 0.4)
-    fig, ax = plt.subplots(figsize=(12, fig_height))
+    fig, ax = plt.subplots(figsize=(13, fig_height))
     current_fig = fig
 
+    # 描画処理
     for _, row in df.iterrows():
         start_sec = (row["start"] - base_time).total_seconds()
         mac = row["mac"]
         
-        # --- 色の判定ロジック ---
         if mac.lower() == TARGET_MAC.lower():
-            plot_color = "limegreen"  # 特定MAC（緑）
-            z_order = 5               # 最前面に表示
+            plot_color = "limegreen"
+            z_order = 5
         elif is_local_mac(mac):
-            plot_color = "red"        # ローカルMAC（赤）
+            plot_color = "red"
             z_order = 2
         else:
-            plot_color = "black"      # グローバルMAC（黒）
+            plot_color = "black"
             z_order = 3
-        # ----------------------
 
         if row["duration"] == 0:
-            # 0秒（一瞬だけ観測）は点で表示
-            ax.scatter(
-                start_sec,
-                mac,
-                color=plot_color,
-                s=30,
-                zorder=z_order,
-                alpha=0.7
-            )
+            ax.scatter(start_sec, mac, color=plot_color, s=30, zorder=z_order, alpha=0.7)
         else:
-            # 滞在時間は棒グラフで表示
-            width = max(row["duration"], 0.5) # 見やすくするため最小幅を設定
-            ax.barh(
-                mac,
-                width,
-                left=start_sec,
-                color=plot_color,
-                zorder=z_order,
-                height=0.6,
-                alpha=0.8
-            )
+            width = max(row["duration"], 0.5)
+            ax.barh(mac, width, left=start_sec, color=plot_color, zorder=z_order, height=0.6, alpha=0.8)
+
+    # --- Y軸ラベルの書き換え (警告回避版) ---
+    new_labels = []
+    for mac in unique_macs:
+        avg_v = avg_rssi_map.get(mac, 0)
+        label_text = f"{mac} ({int(avg_v)}dBm)"
+        new_labels.append(label_text)
+    
+    # UserWarning対策：位置を固定してからラベルをセットする
+    ax.set_yticks(range(len(unique_macs))) 
+    ax.set_yticklabels(new_labels)
 
     # 軸の設定
     def sec_to_minsec(x, pos):
@@ -358,28 +354,28 @@ def generate_timeline():
 
     ax.xaxis.set_major_formatter(FuncFormatter(sec_to_minsec))
     ax.set_xlim(0, time_var.get() * 60)
-    ax.xaxis.set_major_locator(MultipleLocator(60)) # 1分刻み
+    ax.xaxis.set_major_locator(MultipleLocator(60))
 
     ax.set_xlabel("Elapsed Time (mm:ss)")
-    ax.set_ylabel("MAC Address")
-    ax.set_title(f"WiFi STA Presence Timeline ({time_var.get()} min measurement)")
+    ax.set_ylabel("MAC Address (Average RSSI)")
+    ax.set_title(f"WiFi STA Presence Timeline with Avg RSSI ({time_var.get()} min)")
 
-    # Y軸（MACアドレス名）の色設定
-    for label in ax.get_yticklabels():
-        mac_label = label.get_text()
-        if mac_label.lower() == TARGET_MAC.lower():
-            label.set_color("limegreen")
-            label.set_weight("bold") # ターゲットは太字に
-        elif is_local_mac(mac_label):
-            label.set_color("red")
+    # ラベルの色を適用
+    ytick_labels = ax.get_yticklabels()
+    for i, mac in enumerate(unique_macs):
+        if mac.lower() == TARGET_MAC.lower():
+            ytick_labels[i].set_color("limegreen")
+            ytick_labels[i].set_weight("bold")
+        elif is_local_mac(mac):
+            ytick_labels[i].set_color("red")
         else:
-            label.set_color("black")
-    
+            ytick_labels[i].set_color("black")
+
     ax.grid(axis="x", linestyle="--", alpha=0.3)
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+    plt.tight_layout()
     plt.show()
 
-    log(f"[Timeline] 表示MAC数: {unique_mac_count}")
+    log(f"[Timeline] 表示MAC数: {unique_mac_count}")  # ★これで落ちなくなります
     
 def generate_target_rssi_graph():
     """特定MACアドレスのRSSI推移グラフを生成する"""
