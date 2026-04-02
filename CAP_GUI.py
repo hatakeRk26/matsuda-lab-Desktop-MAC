@@ -199,6 +199,7 @@ def generate_timeline():
     plt.close("all")
     session_file = "sessions.csv"
     if not os.path.exists(session_file) or not os.path.exists(CSV_FILE):
+        log("[Timeline] データがありません")
         return
     obs_df = pd.read_csv(CSV_FILE)
     avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
@@ -211,24 +212,29 @@ def generate_timeline():
     base_time = df["start"].min()
     fig, ax = plt.subplots(figsize=(13, max(6, len(unique_macs) * 0.4)))
     current_fig = fig
-    
-    # --- 【修正】グリッドとフォントサイズの設定 ---
-    ax.tick_params(axis='y', labelsize=9)  # 縦軸の文字を小さく
-    ax.xaxis.set_major_locator(MultipleLocator(60)) # 1分(60秒)ごとに目盛り
-    ax.grid(axis='x', linestyle='--', alpha=0.5)    # 1分ごとの点線
-    
+
+    # --- 設定：縦軸文字を小さく(9)、1分ごとの目盛りと点線 ---
+    ax.tick_params(axis='y', labelsize=9) 
+    ax.xaxis.set_major_locator(MultipleLocator(60))
+    ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0)
+
     for _, row in df.iterrows():
         start_sec = (row["start"] - base_time).total_seconds()
         mac = row["mac"]
-        color = "limegreen" if mac.lower() == TARGET_MAC.lower() else ("red" if is_local_mac(mac) else "black")
-         # --- 特定MACの出現時刻に垂直線を引く ---
+        
+        # 【重要】ここで定義しています
+        is_target = (mac.lower() == TARGET_MAC.lower())
+        
+        color = "limegreen" if is_target else ("red" if is_local_mac(mac) else "black")
+
+        # 特定MACの開始時間に垂直線を引く
         if is_target:
             ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
-            
+
         if row["duration"] == 0:
-            ax.scatter(start_sec, mac, color=color, s=50, marker='o', zorder=5) # 丸い点表示
+            ax.scatter(start_sec, mac, color=color, s=50, marker='o', zorder=5)
         else:
-            ax.barh(mac, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8)
+            ax.barh(mac, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
     
     ax.set_yticks(range(len(unique_macs)))
     ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in unique_macs])
@@ -463,6 +469,9 @@ tk.Label(right_frame, text="ログ検索").pack()
 entry = tk.Entry(right_frame, textvariable=search_var, width=25)
 entry.pack(pady=5)
 
+tk.Button(right_frame, text="終了する", fg="red", font=("", 10, "bold"), 
+          command=stop_and_exit, width=15).pack(pady=65) 
+          
 def search_log(*args):
     keyword = search_var.get()
     log_text.tag_remove("highlight", "1.0", tk.END)
@@ -484,8 +493,5 @@ log_text = tk.Text(log_frame, height=12)
 log_text.pack(fill="both")
 log_text.tag_config("green_mac", foreground="limegreen")
 log_text.tag_config("highlight", background="yellow")
-
-# 終了ボタン (見切れないように余白とサイズを調整)
-tk.Button(root, text="終了する", fg="red", font=("", 10, "bold"), command=stop_and_exit, width=20).pack(pady=20)
 
 root.mainloop()
