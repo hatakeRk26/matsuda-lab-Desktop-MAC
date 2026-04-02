@@ -16,7 +16,7 @@ BEACON_PCAP = "beacon_scan.pcap"
 BEACON_TIME = 10
 CSV_FILE = "wifi_observe.csv"
 GAP_THRESHOLD = 30
-TARGET_MAC = "50:a6:d8:7e:d7:c2"
+TARGET_MAC = "42:32:4b:b9:67:cc" 
 # ========================
 
 tcpdump_proc = None
