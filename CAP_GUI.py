@@ -234,7 +234,7 @@ def generate_timeline():
     current_fig = fig
 
     # --- 設定：縦軸文字、1分ごとの目盛りと点線 ---
-    ax.tick_params(axis='y', labelsize=6) 
+    ax.tick_params(axis='y', labelsize=5) 
     ax.xaxis.set_major_locator(MultipleLocator(60))
     ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0)
 
@@ -288,9 +288,11 @@ def generate_timeline():
     plt.show()
 
 def generate_grouped_rssi_timeline():
-    """RSSIグループ表示 (閾値 1.5dBm)"""
+    """RSSIグループ表示 (青い境界線と背景色を完全に同期)"""
     global current_fig
     from matplotlib.ticker import FuncFormatter, MultipleLocator
+    import numpy as np
+    
     plt.close("all")
     session_file = "sessions.csv"
     if not os.path.exists(session_file) or not os.path.exists(CSV_FILE):
@@ -298,91 +300,112 @@ def generate_grouped_rssi_timeline():
         return
 
     obs_df = pd.read_csv(CSV_FILE)
+    obs_df["timestamp"] = pd.to_datetime(obs_df["timestamp"])
     avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
+    
     df = pd.read_csv(session_file)
     df["start"] = pd.to_datetime(df["start"])
     df = df[df["duration"] > 0] if exclude_zero_var.get() else df[df["duration"] >= 0]
 
-    # 平均RSSI順にMACをソート
-    sorted_macs = sorted(avg_rssi_map.keys(), key=lambda x: avg_rssi_map[x], reverse=True)
-    sorted_macs = [m for m in sorted_macs if m in df["mac"].unique()]
+    sorted_macs = sorted(df["mac"].unique(), key=lambda x: avg_rssi_map.get(x, -100), reverse=True)
     if not sorted_macs: return
 
-    base_time = df["start"].min()
-    fig, ax = plt.subplots(figsize=(13, max(6, len(sorted_macs) * 0.45)))
-    current_fig = fig
+    base_time = obs_df["timestamp"].min()
     
-   # --- 【修正】グリッドとフォントサイズの設定 ---
-    ax.tick_params(axis='y', labelsize=6)  # 縦軸の文字を小さく
-    ax.xaxis.set_major_locator(MultipleLocator(60)) # 1分(60秒)ごとに目盛り
-    ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0) # 1分ごとの点線
+    if show_density_var.get():
+        fig, (ax_top, ax) = plt.subplots(2, 1, figsize=(14, max(8, len(sorted_macs) * 0.4)), 
+                                         gridspec_kw={'height_ratios': [1, 5]}, sharex=True)
+        obs_df["elapsed_sec"] = (obs_df["timestamp"] - base_time).dt.total_seconds()
+        bin_width = 5
+        bins = np.arange(0, time_var.get() * 60 + bin_width, bin_width)
+        counts, _ = np.histogram(obs_df["elapsed_sec"], bins=bins)
+        ax_top.bar(bins[:-1], counts, width=bin_width * 0.8, color='dimgray', alpha=0.7, 
+                   align='edge', edgecolor='black', linewidth=0.5)
+        ax_top.set_ylabel("Packets\n/ 5sec", fontsize=9)
+        ax_top.grid(axis='y', linestyle=':', alpha=0.5)
+        ax_top.set_title("Network Activity & RSSI Grouped Timeline", fontsize=14, pad=15)
+        fig.subplots_adjust(hspace=0.05)
+    else:
+        fig, ax = plt.subplots(figsize=(14, max(6, len(sorted_macs) * 0.4)))
+        ax.set_title(f"RSSI Grouped Timeline", fontsize=14)
+    
+    current_fig = fig
 
-    # RSSI閾値を2.0dBmに設定
-    THRESHOLD = 2.0
-    groups, current_group = [], [sorted_macs[0]]
-    for i in range(1, len(sorted_macs)):
-        if abs(avg_rssi_map[sorted_macs[i-1]] - avg_rssi_map[sorted_macs[i]]) <= THRESHOLD:
-            current_group.append(sorted_macs[i])
-        else:
-            groups.append(current_group)
-            current_group = [sorted_macs[i]]
-    groups.append(current_group)
+    # --- 境界線の数値に基づいた色定義 ---
+    def get_color_by_threshold(th):
+        if th >= -30: return "#c8e6c9" # -30dBm以上のエリア
+        if th >= -40: return "#e8f5e9" # -30~-40
+        if th >= -50: return "#fff9c4" # -40~-50
+        if th >= -60: return "#ffe0b2" # -50~-60
+        if th >= -70: return "#ffccbc" # -60~-70
+        return "#ffcdd2"              # -70以下
 
-    colors = cm.get_cmap("Pastel1").colors
-    y_pos = 0
-    for g_idx, group in enumerate(groups):
-        ax.axhspan(y_pos - 0.5, y_pos + len(group) - 0.5, color=colors[g_idx % len(colors)], alpha=0.3)
-        for mac in group:
-            mac_sessions = df[df["mac"] == mac]
-            # --- 特定MAC判定を追加 ---
-            is_target = (mac.lower() == TARGET_MAC.lower())
+    ax.tick_params(axis='y', labelsize=6)
+    ax.xaxis.set_major_locator(MultipleLocator(60))
+    ax.grid(axis='x', linestyle='--', alpha=0.3, zorder=0)
+
+    # 初期設定：最初の行のRSSIに基づいた色
+    first_rssi = avg_rssi_map.get(sorted_macs[0], -100)
+    current_zone_th = -100
+    for th in [-30, -40, -50, -60, -70, -80]:
+        if first_rssi >= th:
+            current_zone_th = th
+            break
             
-            for _, row in mac_sessions.iterrows():
-                start_sec = (row["start"] - base_time).total_seconds()
-                
-                # ★特定MACの出現位置に垂直な点線を引く
-                if is_target:
-                    ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
+    last_rssi = first_rssi
+    thresholds = [-30, -40, -50, -60, -70, -80]
 
-                color = "limegreen" if is_target else ("red" if is_local_mac(mac) else "black")
-                if row["duration"] == 0:
-                    ax.scatter(start_sec, y_pos, color=color, s=50, marker='o', zorder=5) # 丸い点
-                else:
-                    ax.barh(y_pos, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
-            y_pos += 1
+    for i, mac in enumerate(sorted_macs):
+        rssi = avg_rssi_map.get(mac, -100)
+        
+        # 境界線を跨いだ瞬間に、現在の「ゾーンしきい値」を更新する
+        for th in thresholds:
+            if i > 0 and last_rssi > th >= rssi:
+                ax.axhline(i - 0.5, color="blue", linewidth=1.2, linestyle="-", alpha=0.8, zorder=4)
+                ax.text(time_var.get() * 60 * 1.005, i - 0.5, f"{th}dBm", 
+                        color="blue", va="center", fontweight="bold", fontsize=9)
+                current_zone_th = th # ここで背景色用のしきい値を同期更新
+        
+        last_rssi = rssi
+
+        # 現在のゾーンしきい値に基づいた背景色を塗る（MAC個別のRSSIは無視）
+        ax.axhspan(i - 0.5, i + 0.5, color=get_color_by_threshold(current_zone_th), alpha=0.6, zorder=0)
+
+        # データの描画
+        mac_sessions = df[df["mac"] == mac]
+        is_target = (mac.lower() == TARGET_MAC.lower())
+        line_color = "limegreen" if is_target else ("red" if is_local_mac(mac) else "black")
+        
+        for _, row in mac_sessions.iterrows():
+            start_sec = (row["start"] - base_time).total_seconds()
+            if row["duration"] == 0:
+                ax.scatter(start_sec, i, color=line_color, s=35, marker='o', zorder=5)
+            else:
+                ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=line_color, height=0.6, alpha=0.8, zorder=3)
 
     ax.set_yticks(range(len(sorted_macs)))
-    ax.set_yticklabels([f"{m} ({int(avg_rssi_map[m])}dBm)" for m in sorted_macs])
-    
-    # 上下の余白を完全にゼロにする
+    ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in sorted_macs])
     ax.set_ylim(-0.5, len(sorted_macs) - 0.5)
-    ax.margins(y=0)
+    ax.invert_yaxis()
     
-    # 縦軸ラベルの色分け
     ytick_labels = ax.get_yticklabels()
     for i, mac in enumerate(sorted_macs):
         if mac.lower() == TARGET_MAC.lower():
             ytick_labels[i].set_color("limegreen")
             ytick_labels[i].set_weight("bold")
+            ax.add_patch(plt.Rectangle((0, i-0.5), time_var.get()*60, 1, fill=False, edgecolor='limegreen', linewidth=1, alpha=0.5, zorder=6))
         elif is_local_mac(mac):
             ytick_labels[i].set_color("red")
-        else:
-            ytick_labels[i].set_color("black")
 
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
-    ax.set_title(f"RSSI Grouped Timeline (Threshold: {THRESHOLD}dBm)")
     
-    # 中央の計測時間表示
-    ax.text(0.5, 0.5, f"{time_var.get()} min Capture", 
-            transform=ax.transAxes, 
-            fontsize=40, color='gray', alpha=0.15,
-            ha='center', va='center', fontweight='bold', 
-            zorder=0)
-            
+    ax.text(0.5, 0.5, f"{time_var.get()} min Capture", transform=ax.transAxes, 
+            fontsize=40, color='gray', alpha=0.1, ha='center', va='center', fontweight='bold', zorder=0)
+
     plt.tight_layout()
     plt.show()
-
+    
 def generate_target_rssi_graph():
     from matplotlib.ticker import FuncFormatter, MultipleLocator
     if not os.path.exists(CSV_FILE): return
@@ -505,6 +528,9 @@ tk.Radiobutton(mac_frame, text="複数表示", variable=mac_mode, value="multi")
 exclude_frame = tk.Frame(root)
 exclude_frame.pack(pady=5)
 tk.Checkbutton(exclude_frame, text="滞在時間0秒のMACを除外", variable=exclude_zero_var).pack()
+
+show_density_var = tk.BooleanVar(value=True) # デフォルトでON
+tk.Checkbutton(exclude_frame, text="パケット密度グラフを表示する", variable=show_density_var).pack()
 
 main_frame = tk.Frame(root)
 main_frame.pack(pady=5)
