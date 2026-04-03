@@ -47,15 +47,16 @@ if not os.path.exists(CSV_FILE):
         writer.writerow(["timestamp","type","mac","rssi","channel"])
 
 def log(msg):
-    if not running:
-        return
+    if not running: return
     try:
-        if not root.winfo_exists():
-            return
+        # rootが存在し、かつ閉じられていないか確認
+        if not root or not root.winfo_exists(): return
     except:
         return
+
     def _update():
         try:
+            if not root.winfo_exists(): return
             if TARGET_MAC in msg.lower():
                 log_text.insert(tk.END, msg + "\n", "green_mac")
             else:
@@ -63,11 +64,30 @@ def log(msg):
             log_text.see(tk.END)
         except:
             pass
+
     try:
         root.after(0, _update)
     except:
         pass
 
+def wait_and_finish(pcap_file):
+    global tcpdump_proc
+    if tcpdump_proc:
+        tcpdump_proc.wait()
+    
+    if not running: return # 終了中なら何もしない
+    
+    log("[Capture] 完了")
+    extract_macs(pcap_file)
+    
+    # 画面が生きている場合のみ更新
+    try:
+        if root.winfo_exists():
+            root.after(0, lambda: status_label.config(text="完了"))
+            root.after(0, lambda: start_btn.config(state="normal"))
+    except:
+        pass
+        
 def capture_beacons():
     if os.path.exists(BEACON_PCAP):
         os.remove(BEACON_PCAP)
@@ -213,8 +233,8 @@ def generate_timeline():
     fig, ax = plt.subplots(figsize=(13, max(6, len(unique_macs) * 0.4)))
     current_fig = fig
 
-    # --- 設定：縦軸文字を小さく(9)、1分ごとの目盛りと点線 ---
-    ax.tick_params(axis='y', labelsize=9) 
+    # --- 設定：縦軸文字、1分ごとの目盛りと点線 ---
+    ax.tick_params(axis='y', labelsize=6) 
     ax.xaxis.set_major_locator(MultipleLocator(60))
     ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0)
 
@@ -239,6 +259,10 @@ def generate_timeline():
     ax.set_yticks(range(len(unique_macs)))
     ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in unique_macs])
     
+    # 上下の余白を完全にゼロにする
+    ax.set_ylim(-0.5, len(unique_macs) - 0.5) 
+    ax.margins(y=0)
+    
     # 縦軸ラベルの色分け
     ytick_labels = ax.get_yticklabels()
     for i, mac in enumerate(unique_macs):
@@ -252,7 +276,14 @@ def generate_timeline():
 
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
-    ax.set_title("WiFi STA Presence Timeline")
+    ax.set_title("WiFi STA Presence Timeline", fontsize=12)
+    
+    ax.text(0.5, 0.5, f"{time_var.get()} min Capture", 
+            transform=ax.transAxes, 
+            fontsize=40, color='gray', alpha=0.15, # alphaで透明度を調整
+            ha='center', va='center', fontweight='bold', 
+            zorder=0) # zorder=0 でデータの点や棒の下側に配置
+            
     plt.tight_layout()
     plt.show()
 
@@ -282,12 +313,12 @@ def generate_grouped_rssi_timeline():
     current_fig = fig
     
    # --- 【修正】グリッドとフォントサイズの設定 ---
-    ax.tick_params(axis='y', labelsize=9)  # 縦軸の文字を小さく
+    ax.tick_params(axis='y', labelsize=6)  # 縦軸の文字を小さく
     ax.xaxis.set_major_locator(MultipleLocator(60)) # 1分(60秒)ごとに目盛り
     ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0) # 1分ごとの点線
 
-    # RSSI閾値を1.5dBmに設定
-    THRESHOLD = 1.5
+    # RSSI閾値を2.0dBmに設定
+    THRESHOLD = 2.0
     groups, current_group = [], [sorted_macs[0]]
     for i in range(1, len(sorted_macs)):
         if abs(avg_rssi_map[sorted_macs[i-1]] - avg_rssi_map[sorted_macs[i]]) <= THRESHOLD:
@@ -303,9 +334,17 @@ def generate_grouped_rssi_timeline():
         ax.axhspan(y_pos - 0.5, y_pos + len(group) - 0.5, color=colors[g_idx % len(colors)], alpha=0.3)
         for mac in group:
             mac_sessions = df[df["mac"] == mac]
+            # --- 特定MAC判定を追加 ---
+            is_target = (mac.lower() == TARGET_MAC.lower())
+            
             for _, row in mac_sessions.iterrows():
                 start_sec = (row["start"] - base_time).total_seconds()
-                color = "limegreen" if mac.lower() == TARGET_MAC.lower() else ("red" if is_local_mac(mac) else "black")
+                
+                # ★特定MACの出現位置に垂直な点線を引く
+                if is_target:
+                    ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
+
+                color = "limegreen" if is_target else ("red" if is_local_mac(mac) else "black")
                 if row["duration"] == 0:
                     ax.scatter(start_sec, y_pos, color=color, s=50, marker='o', zorder=5) # 丸い点
                 else:
@@ -314,6 +353,10 @@ def generate_grouped_rssi_timeline():
 
     ax.set_yticks(range(len(sorted_macs)))
     ax.set_yticklabels([f"{m} ({int(avg_rssi_map[m])}dBm)" for m in sorted_macs])
+    
+    # 上下の余白を完全にゼロにする
+    ax.set_ylim(-0.5, len(sorted_macs) - 0.5)
+    ax.margins(y=0)
     
     # 縦軸ラベルの色分け
     ytick_labels = ax.get_yticklabels()
@@ -329,6 +372,14 @@ def generate_grouped_rssi_timeline():
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
     ax.set_title(f"RSSI Grouped Timeline (Threshold: {THRESHOLD}dBm)")
+    
+    # 中央の計測時間表示
+    ax.text(0.5, 0.5, f"{time_var.get()} min Capture", 
+            transform=ax.transAxes, 
+            fontsize=40, color='gray', alpha=0.15,
+            ha='center', va='center', fontweight='bold', 
+            zorder=0)
+            
     plt.tight_layout()
     plt.show()
 
@@ -380,14 +431,21 @@ def wait_and_finish(pcap_file):
 def stop_and_exit():
     global tcpdump_proc, running
     running = False
+    # プロセスが動いていたら止める
     if tcpdump_proc and tcpdump_proc.poll() is None:
         tcpdump_proc.terminate()
         tcpdump_proc.wait()
-    plt.close("all")
+    
+    plt.close("all") # グラフを閉じる
+    
     try:
-        root.after(0, root.quit)
-        root.after(200, root.destroy)
-    except: pass
+        root.destroy() # ウィンドウ破棄
+    except:
+        pass
+    
+    # 強制終了（これで RuntimeError を回避する）
+    import os
+    os._exit(0)
 
 def save_graph():
     global current_fig
