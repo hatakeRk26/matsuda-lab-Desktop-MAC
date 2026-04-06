@@ -41,7 +41,7 @@ def manual_channel_set(event=None):
         channel_label.config(text=f"手動チャネル: CH {ch}")
         start_btn.config(state="normal")
 
-# 【変更点1】CSV初期化時に "seq" 列を追加
+# CSV初期化時に "seq" 列を追加
 if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, "w", newline="") as f:
         writer = csv.writer(f)
@@ -171,16 +171,20 @@ def extract_macs(pcap_file):
             if mac in ap_bssid_set:
                 continue
             
-            # 【変更点2】シーケンス番号を取得
+            # シーケンス番号を取得
             seq = dot11.SC >> 4
 
             pkt_time = float(pkt.time)
             rssi = getattr(pkt, "dBm_AntSignal", None)
             
-            # 【変更点3】csv_bufferにseqを追加
+            # csv_bufferにseqを追加
             csv_buffer.append([
                 datetime.fromtimestamp(pkt_time).strftime("%Y-%m-%d %H:%M:%S.%f"),
-                "STA", mac, rssi, selected_channel, seq
+                "STA", 
+                mac, 
+                rssi, 
+                selected_channel, 
+                seq
             ])
 
             if mac not in sta_records:
@@ -218,50 +222,6 @@ def extract_macs(pcap_file):
         mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
         log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={lifetime_str}")
     log(f"STA数: {len(sta_records)}")
-    
-def draw_seq_links(ax, obs_df, base_time, mac_to_y_map):
-    """
-    シーケンス番号の連続性を元に、MACアドレス間の繋がりを推定して描画する
-    条件を緩和し、パケットの取りこぼしや他デバイスの混入に対応
-    """
-    import pandas as pd
-    obs_df = obs_df.copy()
-    obs_df["timestamp_dt"] = pd.to_datetime(obs_df["timestamp"])
-    
-    # 1. 各MACアドレスごとの「最初のパケット」と「最後のパケット」を抽出
-    first_packets = obs_df.sort_values("timestamp").groupby("mac").head(1)
-    last_packets = obs_df.sort_values("timestamp").groupby("mac").tail(1)
-    
-    # 2. 全ての「最後のパケット」に対して、その直後に始まった別のMACがないか探す
-    for _, last_p in last_packets.iterrows():
-        # 条件に合う「次に現れたMAC」の候補を探す
-        # ・MACが異なる
-        # ・このMACが終わった後の時間に出現している
-        # ・出現時間が5秒以内 (2秒から5秒に緩和)
-        potential_next = first_packets[
-            (first_packets["mac"] != last_p["mac"]) & 
-            (first_packets["timestamp_dt"] > last_p["timestamp_dt"]) & 
-            ((first_packets["timestamp_dt"] - last_p["timestamp_dt"]).dt.total_seconds() <= 5.0)
-        ]
-        
-        for _, next_p in potential_next.iterrows():
-            # シーケンス番号の差を計算 (4096のループを考慮)
-            seq_diff = (next_p["seq"] - last_p["seq"]) % 4096
-            
-            # シーケンス番号が 1〜15 の範囲で進んでいれば同一端末とみなす
-            # (1固定だとパケットロスで繋がらなくなるため緩和)
-            if 1 <= seq_diff <= 15:
-                x1 = (last_p["timestamp_dt"] - base_time).total_seconds()
-                x2 = (next_p["timestamp_dt"] - base_time).total_seconds()
-                y1 = mac_to_y_map.get(last_p["mac"])
-                y2 = mac_to_y_map.get(next_p["mac"])
-                
-                if y1 is not None and y2 is not None:
-                    # 青い点線を描画
-                    ax.plot([x1, x2], [y1, y2], color="blue", linestyle="--", linewidth=1.2, alpha=0.8, zorder=10)
-                    # 繋ぎ目に小さな目印を打つ（デバッグ兼視認性向上）
-                    ax.scatter([x1, x2], [y1, y2], color="blue", s=10, zorder=11, alpha=0.5)
-                    
 
 def generate_timeline():
     global current_fig
@@ -287,34 +247,25 @@ def generate_timeline():
     ax.xaxis.set_major_locator(MultipleLocator(60))
     ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0)
 
-    # 描画用インデックス作成
-    mac_to_y = {mac: i for i, mac in enumerate(unique_macs)}
-
-    for i, mac in enumerate(unique_macs):
-        mac_sessions = df[df["mac"] == mac]
+    for _, row in df.iterrows():
+        start_sec = (row["start"] - base_time).total_seconds()
+        mac = row["mac"]
         is_target = (mac.lower() == TARGET_MAC.lower())
         color = "limegreen" if is_target else ("red" if is_local_mac(mac) else "black")
 
         if is_target:
-            ax.axvline(x=(mac_sessions["start"].min() - base_time).total_seconds(), 
-                       color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
+            ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
 
-        for _, row in mac_sessions.iterrows():
-            start_sec = (row["start"] - base_time).total_seconds()
-            if row["duration"] == 0:
-                ax.scatter(start_sec, i, color=color, s=50, marker='o', zorder=5)
-            else:
-                ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
+        if row["duration"] == 0:
+            ax.scatter(start_sec, mac, color=color, s=50, marker='o', zorder=5)
+        else:
+            ax.barh(mac, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
     
-    # シーケンス番号によるリンク描画
-    draw_seq_links(ax, obs_df, base_time, mac_to_y)
-
     ax.set_yticks(range(len(unique_macs)))
     ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in unique_macs])
     ax.set_ylim(-0.5, len(unique_macs) - 0.5) 
     ax.margins(y=0)
     
-    # ターゲット・ローカルMACの色付けロジック（復活）
     ytick_labels = ax.get_yticklabels()
     for i, mac in enumerate(unique_macs):
         if mac.lower() == TARGET_MAC.lower():
@@ -327,15 +278,22 @@ def generate_timeline():
 
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
-    ax.set_title("WiFi STA Presence Timeline (Blue dots: Seq continuity)", fontsize=12)
+    ax.set_title("WiFi STA Presence Timeline", fontsize=12)
     
-    # 透かし文字（復活）
     ax.text(0.5, 0.5, f"{time_var.get()} min Capture", 
             transform=ax.transAxes, 
             fontsize=40, color='gray', alpha=0.15, 
             ha='center', va='center', fontweight='bold', 
             zorder=0) 
-            
+    
+    # MACアドレスをY軸のインデックスに紐付け
+    mac_to_y = {mac: i for i, mac in enumerate(unique_macs)}
+    # リンク描画関数の呼び出し
+    draw_seq_links(ax, obs_df, base_time, mac_to_y)
+
+
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
+    
     plt.tight_layout()
     plt.show()
 
@@ -351,7 +309,7 @@ def generate_grouped_rssi_timeline():
         return
 
     obs_df = pd.read_csv(CSV_FILE)
-    obs_df["timestamp_dt"] = pd.to_datetime(obs_df["timestamp"])
+    obs_df["timestamp"] = pd.to_datetime(obs_df["timestamp"])
     avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
     
     df = pd.read_csv(session_file)
@@ -361,12 +319,12 @@ def generate_grouped_rssi_timeline():
     sorted_macs = sorted(df["mac"].unique(), key=lambda x: avg_rssi_map.get(x, -100), reverse=True)
     if not sorted_macs: return
 
-    base_time = obs_df["timestamp_dt"].min()
+    base_time = obs_df["timestamp"].min()
     
     if show_density_var.get():
         fig, (ax_top, ax) = plt.subplots(2, 1, figsize=(14, max(8, len(sorted_macs) * 0.4)), 
                                          gridspec_kw={'height_ratios': [1, 5]}, sharex=True)
-        obs_df["elapsed_sec"] = (obs_df["timestamp_dt"] - base_time).dt.total_seconds()
+        obs_df["elapsed_sec"] = (obs_df["timestamp"] - base_time).dt.total_seconds()
         bin_width = 5
         bins = np.arange(0, time_var.get() * 60 + bin_width, bin_width)
         counts, _ = np.histogram(obs_df["elapsed_sec"], bins=bins)
@@ -394,27 +352,28 @@ def generate_grouped_rssi_timeline():
     ax.xaxis.set_major_locator(MultipleLocator(60))
     ax.grid(axis='x', linestyle='--', alpha=0.3, zorder=0)
 
-    # 描画用インデックス作成
-    mac_to_y = {mac: i for i, mac in enumerate(sorted_macs)}
-    thresholds = [-30, -40, -50, -60, -70, -80]
-    
     first_rssi = avg_rssi_map.get(sorted_macs[0], -100)
     current_zone_th = -100
-    for th in thresholds:
+    for th in [-30, -40, -50, -60, -70, -80]:
         if first_rssi >= th:
             current_zone_th = th
             break
             
     last_rssi = first_rssi
+    thresholds = [-30, -40, -50, -60, -70, -80]
+
     for i, mac in enumerate(sorted_macs):
         rssi = avg_rssi_map.get(mac, -100)
+        
         for th in thresholds:
             if i > 0 and last_rssi > th >= rssi:
                 ax.axhline(i - 0.5, color="blue", linewidth=1.2, linestyle="-", alpha=0.8, zorder=4)
                 ax.text(time_var.get() * 60 * 1.005, i - 0.5, f"{th}dBm", 
                         color="blue", va="center", fontweight="bold", fontsize=9)
                 current_zone_th = th 
+        
         last_rssi = rssi
+
         ax.axhspan(i - 0.5, i + 0.5, color=get_color_by_threshold(current_zone_th), alpha=0.6, zorder=0)
 
         mac_sessions = df[df["mac"] == mac]
@@ -428,30 +387,23 @@ def generate_grouped_rssi_timeline():
             else:
                 ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=line_color, height=0.6, alpha=0.8, zorder=3)
 
-    # シーケンス番号によるリンク描画
-    draw_seq_links(ax, obs_df, base_time, mac_to_y)
-
     ax.set_yticks(range(len(sorted_macs)))
     ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in sorted_macs])
     ax.set_ylim(-0.5, len(sorted_macs) - 0.5)
     ax.invert_yaxis()
     
-    # ターゲット・ローカルMACの強調ロジック（復活）
     ytick_labels = ax.get_yticklabels()
     for i, mac in enumerate(sorted_macs):
         if mac.lower() == TARGET_MAC.lower():
             ytick_labels[i].set_color("limegreen")
             ytick_labels[i].set_weight("bold")
-            # ターゲット行を囲む緑の枠
-            ax.add_patch(plt.Rectangle((0, i-0.5), time_var.get()*60, 1, 
-                                       fill=False, edgecolor='limegreen', linewidth=1, alpha=0.5, zorder=6))
+            ax.add_patch(plt.Rectangle((0, i-0.5), time_var.get()*60, 1, fill=False, edgecolor='limegreen', linewidth=1, alpha=0.5, zorder=6))
         elif is_local_mac(mac):
             ytick_labels[i].set_color("red")
 
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
     
-    # 透かし文字（復活）
     ax.text(0.5, 0.5, f"{time_var.get()} min Capture", transform=ax.transAxes, 
             fontsize=40, color='gray', alpha=0.1, ha='center', va='center', fontweight='bold', zorder=0)
 
@@ -474,15 +426,6 @@ def generate_target_rssi_graph():
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
     ax.set_ylim(-105, -15); ax.grid(True, linestyle="--", alpha=0.5); ax.legend()
-    
-    # ソートされたMACアドレスリストに基づいてY軸を紐付け
-    mac_to_y = {mac: i for i, mac in enumerate(sorted_macs)}
-    # リンク描画関数の呼び出し
-    draw_seq_links(ax, obs_df, base_time, mac_to_y)
-    # --- ここまで ---
-
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
-    
     plt.tight_layout(); plt.show()
 
 def start_capture():
@@ -492,7 +435,7 @@ def start_capture():
         messagebox.showwarning("警告", "AP選択またはチャネル入力")
         return
     
-    # 【変更点4】再開時、CSVのヘッダーに "seq" を追加
+    # 再開時、CSVのヘッダーに "seq" を追加
     with open(CSV_FILE, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["timestamp","type","mac","rssi","channel","seq"])
