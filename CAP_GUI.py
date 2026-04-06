@@ -20,6 +20,23 @@ GAP_THRESHOLD = 30
 TARGET_MAC = "50:a6:d8:7e:d7:c2" 
 # ========================
 
+OUI_MAP = {
+    "0050f2": "Microsoft/WMM",
+    "0017f2": "Apple",
+    "0010fa": "Apple",
+    "000393": "Apple",
+    "000af4": "Google",
+    "0012fb": "Samsung",
+    "0000f0": "Samsung",
+    "00e04c": "Realtek",
+    "001018": "Broadcom",
+    "000c43": "Ralink",
+    "005043": "Marvell",
+    "002686": "Intel",
+    "00212f": "Amazon",
+    "506f9a": "Wi-Fi Alliance",
+}
+
 tcpdump_proc = None
 selected_channel = None
 ap_bssid_set = set()
@@ -41,11 +58,18 @@ def manual_channel_set(event=None):
         channel_label.config(text=f"手動チャネル: CH {ch}")
         start_btn.config(state="normal")
 
-# CSV初期化時に "seq" 列を追加
+# CSV初期化
 if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp","type","mac","rssi","channel","seq"])
+        writer.writerow(["timestamp",
+        "type",
+        "mac",
+        "rssi",
+        "channel",
+        "seq",
+        "ie_fingerprint",
+        "vendor"])
 
 def log(msg):
     if not running: return
@@ -157,7 +181,7 @@ def extract_macs(pcap_file):
     sta_records = {}
     sta_sessions = {}
     csv_buffer = []
-    log("========== MAC + RSSI + SEQ ==========")
+    log("========== MAC + RSSI  ==========")
     with PcapReader(pcap_file) as packets:
         for pkt in packets:
             if not pkt.haslayer(Dot11):
@@ -170,6 +194,32 @@ def extract_macs(pcap_file):
             mac = dot11.addr2
             if mac in ap_bssid_set:
                 continue
+                
+            # --- IE (Information Elements) の抽出 ---
+            ie_ids = []
+            detected_vendors = [] # メーカー名を格納するリスト
+            vendor_str = "Unknown"  # ← 最初に見つからなかった時用の値を入れておく
+            
+            elt = pkt.getlayer(Dot11Elt)
+            while elt:
+                if hasattr(elt, "ID"):
+                    ie_ids.append(str(elt.ID))
+                    
+                    # IDが221（Vendor Specific）の場合、メーカーを特定
+                    if elt.ID == 221 and len(elt.info) >= 3:
+                        # 最初の3バイトを16進数文字列にする (例: "0017f2")
+                        oui = elt.info[:3].hex()
+                        vendor_name = OUI_MAP.get(oui, f"Unknown({oui})")
+                        if vendor_name not in detected_vendors:
+                            detected_vendors.append(vendor_name)
+                            
+                elt = elt.payload.getlayer(Dot11Elt)
+            # IDをカンマ区切りの文字列にする（これがフィンガープリントになる）
+            ie_fingerprint = ",".join(ie_ids)
+            # 見つかったメーカー名を文字列にする
+            if detected_vendors:
+                vendor_str = "|".join(detected_vendors)
+            # ---------------------------------------
             
             # シーケンス番号を取得
             seq = dot11.SC >> 4
@@ -177,14 +227,16 @@ def extract_macs(pcap_file):
             pkt_time = float(pkt.time)
             rssi = getattr(pkt, "dBm_AntSignal", None)
             
-            # csv_bufferにseqを追加
+            # csv_buffer
             csv_buffer.append([
                 datetime.fromtimestamp(pkt_time).strftime("%Y-%m-%d %H:%M:%S.%f"),
                 "STA", 
                 mac, 
                 rssi, 
                 selected_channel, 
-                seq
+                seq,
+                ie_fingerprint,
+                vendor_str
             ])
 
             if mac not in sta_records:
@@ -220,6 +272,7 @@ def extract_macs(pcap_file):
         lifetime_str = f"{int(lifetime)}秒" if lifetime >= 1 else f"{lifetime:.4f}秒"
         avg_rssi = int(data["rssi_sum"] / data["rssi_count"]) if data["rssi_count"] > 0 else None
         mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
+        vendor = data.get("vendor", "Unknown") # 特定したメーカー名
         log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={lifetime_str}")
     log(f"STA数: {len(sta_records)}")
 
@@ -285,12 +338,6 @@ def generate_timeline():
             fontsize=40, color='gray', alpha=0.15, 
             ha='center', va='center', fontweight='bold', 
             zorder=0) 
-    
-    # MACアドレスをY軸のインデックスに紐付け
-    mac_to_y = {mac: i for i, mac in enumerate(unique_macs)}
-    # リンク描画関数の呼び出し
-    draw_seq_links(ax, obs_df, base_time, mac_to_y)
-
 
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     
@@ -435,10 +482,17 @@ def start_capture():
         messagebox.showwarning("警告", "AP選択またはチャネル入力")
         return
     
-    # 再開時、CSVのヘッダーに "seq" を追加
+    # 再開時CSVのヘッダー
     with open(CSV_FILE, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp","type","mac","rssi","channel","seq"])
+        writer.writerow(["timestamp",
+        "type",
+        "mac",
+        "rssi",
+        "channel",
+        "seq",
+        "ie_fingerprint",
+        "vendor"])
 
     duration = time_var.get()
     subprocess.run(["iw","dev",INTERFACE,"set","channel",str(selected_channel)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
