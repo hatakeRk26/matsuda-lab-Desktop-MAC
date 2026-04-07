@@ -342,7 +342,7 @@ def generate_timeline():
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     
     plt.tight_layout()
-    plt.show()
+    plt.show(block=False)
 
 def generate_grouped_rssi_timeline():
     global current_fig
@@ -455,7 +455,7 @@ def generate_grouped_rssi_timeline():
             fontsize=40, color='gray', alpha=0.1, ha='center', va='center', fontweight='bold', zorder=0)
 
     plt.tight_layout()
-    plt.show()
+    plt.show(block=False)
     
 def generate_target_rssi_graph():
     from matplotlib.ticker import FuncFormatter, MultipleLocator
@@ -473,7 +473,7 @@ def generate_target_rssi_graph():
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
     ax.set_ylim(-105, -15); ax.grid(True, linestyle="--", alpha=0.5); ax.legend()
-    plt.tight_layout(); plt.show()
+    plt.tight_layout(); plt.show(block=False)
 
 def start_capture():
     global tcpdump_proc, current_fig
@@ -506,17 +506,23 @@ def start_capture():
 def stop_and_exit():
     global tcpdump_proc, running
     running = False
+    
+    # 1. tcpdumpを止める
     if tcpdump_proc and tcpdump_proc.poll() is None:
         tcpdump_proc.terminate()
         tcpdump_proc.wait()
     
+    # 2. グラフをすべて閉じる
     plt.close("all") 
     
+    # 3. Tkinterのメインループを終了させてから破棄する (★修正ポイント)
     try:
-        root.destroy() 
+        root.quit()    # これで「メインループ」を安全に止める
+        root.destroy() # その後でウィンドウを消す
     except:
         pass
     
+    # 4. 最後に念のためプロセスを終了させる
     import os
     os._exit(0)
 
