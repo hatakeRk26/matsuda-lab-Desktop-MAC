@@ -362,7 +362,7 @@ def generate_grouped_rssi_timeline():
     df = pd.read_csv(session_file)
     df["start"] = pd.to_datetime(df["start"])
     df = df[df["duration"] > 0] if exclude_zero_var.get() else df[df["duration"] >= 0]
-
+    # RSSI順にソート
     sorted_macs = sorted(df["mac"].unique(), key=lambda x: avg_rssi_map.get(x, -100), reverse=True)
     if not sorted_macs: return
 
@@ -406,15 +406,22 @@ def generate_grouped_rssi_timeline():
             current_zone_th = th
             break
             
+    # 初期設定
     last_rssi = first_rssi
     thresholds = [-30, -40, -50, -60, -70, -80]
 
     for i, mac in enumerate(sorted_macs):
         rssi = avg_rssi_map.get(mac, -100)
         
+        # --- 1. 1dBmごとの細い黒線を描画 (隣とRSSIの整数値が異なる場合) ---
+        if i > 0:
+            if int(last_rssi) != int(rssi):
+                ax.axhline(i - 0.5, color="black", linewidth=0.7, alpha=0.2, zorder=1)
+
+        # --- 2. 10dBmごとの太い青線を描画 ---
         for th in thresholds:
             if i > 0 and last_rssi > th >= rssi:
-                ax.axhline(i - 0.5, color="blue", linewidth=1.2, linestyle="-", alpha=0.8, zorder=4)
+                ax.axhline(i - 0.5, color="blue", linewidth=1.2, linestyle="--", alpha=0.8, zorder=4)
                 ax.text(time_var.get() * 60 * 1.005, i - 0.5, f"{th}dBm", 
                         color="blue", va="center", fontweight="bold", fontsize=9)
                 current_zone_th = th 
@@ -434,11 +441,13 @@ def generate_grouped_rssi_timeline():
             else:
                 ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=line_color, height=0.6, alpha=0.8, zorder=3)
 
+    # 軸の設定
     ax.set_yticks(range(len(sorted_macs)))
     ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in sorted_macs])
     ax.set_ylim(-0.5, len(sorted_macs) - 0.5)
     ax.invert_yaxis()
     
+    # ラベルの色分け
     ytick_labels = ax.get_yticklabels()
     for i, mac in enumerate(sorted_macs):
         if mac.lower() == TARGET_MAC.lower():
@@ -631,5 +640,6 @@ log_text = tk.Text(log_frame, height=12)
 log_text.pack(fill="both")
 log_text.tag_config("green_mac", foreground="limegreen")
 log_text.tag_config("highlight", background="yellow")
+root.protocol("WM_DELETE_WINDOW", stop_and_exit) 
 
 root.mainloop()
