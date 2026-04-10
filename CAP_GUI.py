@@ -454,7 +454,6 @@ def generate_grouped_rssi_timeline():
         if mac.lower() == TARGET_MAC.lower():
             ytick_labels[i].set_color("limegreen")
             ytick_labels[i].set_weight("bold")
-            ax.add_patch(plt.Rectangle((0, i-0.5), time_var.get()*60, 1, fill=False, edgecolor='limegreen', linewidth=1, alpha=0.5, zorder=6))
         elif is_local_mac(mac):
             ytick_labels[i].set_color("red")
 
