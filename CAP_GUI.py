@@ -5,6 +5,7 @@ import threading
 from scapy.all import rdpcap, Dot11, Dot11Elt, PcapReader
 import os
 import csv
+import sys
 from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -514,26 +515,38 @@ def start_capture():
 
 def stop_and_exit():
     global tcpdump_proc, running
+    # 1. ログ更新などのバックグラウンド処理を止めるフラグを立てる
     running = False
     
-    # 1. tcpdumpを止める
+    # 2. 子プロセス (tcpdump) を「安全に」終了させる
+    # terminate() は「終了してください」という正式な依頼（SIGTERM）です
     if tcpdump_proc and tcpdump_proc.poll() is None:
-        tcpdump_proc.terminate()
-        tcpdump_proc.wait()
-    
-    # 2. グラフをすべて閉じる
-    plt.close("all") 
-    
-    # 3. Tkinterのメインループを終了させてから破棄する (★修正ポイント)
+        try:
+            tcpdump_proc.terminate() 
+            # 終了するまで最大2秒待つ（これによってファイルが正しく書き閉じられる）
+            tcpdump_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            # 2秒待っても終わらなければ、やむを得ず強制終了
+            tcpdump_proc.kill()
+        except Exception as e:
+            print(f"tcpdump終了中にエラー: {e}")
+
+    # 3. グラフ（Matplotlib）をすべて閉じてメモリを解放
     try:
-        root.quit()    # これで「メインループ」を安全に止める
-        root.destroy() # その後でウィンドウを消す
+        plt.close("all")
     except:
         pass
-    
-    # 4. 最後に念のためプロセスを終了させる
-    import os
-    os._exit(0)
+
+    # 4. Tkinterのメインループを止める
+    try:
+        root.quit()
+        # root.update() を呼んで、溜まっている残務処理を消化させる
+        root.update()
+        # ウィンドウを破壊してリソースを解放
+        root.destroy()
+    except Exception:
+        # すでに閉じられている場合などのエラーは無視
+        pass
 
 def save_graph():
     global current_fig
