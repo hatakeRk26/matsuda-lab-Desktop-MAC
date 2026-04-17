@@ -437,6 +437,10 @@ def generate_grouped_rssi_timeline():
         
         for _, row in mac_sessions.iterrows():
             start_sec = (row["start"] - base_time).total_seconds()
+            
+            if is_target:
+                ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
+                
             if row["duration"] == 0:
                 ax.scatter(start_sec, i, color=line_color, s=35, marker='o', zorder=5)
             else:
@@ -514,39 +518,35 @@ def start_capture():
 
 def stop_and_exit():
     global tcpdump_proc, running
-    # 1. ログ更新などのバックグラウンド処理を止めるフラグを立てる
     running = False
     
-    # 2. 子プロセス (tcpdump) を「安全に」終了させる
-    # terminate() は「終了してください」という正式な依頼（SIGTERM）です
+    # 1. キャプチャを安全に止める（データ保護）
     if tcpdump_proc and tcpdump_proc.poll() is None:
         try:
-            tcpdump_proc.terminate() 
-            # 終了するまで最大2秒待つ（これによってファイルが正しく書き閉じられる）
-            tcpdump_proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            # 2秒待っても終わらなければ、やむを得ず強制終了
+            # 終了信号を送り、ファイルが正しく書き閉じられるのを待つ
+            tcpdump_proc.terminate()
+            tcpdump_proc.wait(timeout=1.0)
+        except:
+            # 止まらなければ強制的に止める（ゾンビプロセス防止）
             tcpdump_proc.kill()
-        except Exception as e:
-            print(f"tcpdump終了中にエラー: {e}")
-
-    # 3. グラフ（Matplotlib）をすべて閉じてメモリを解放
+    
+    # 2. グラフを閉じる
+    plt.close("all")
+    
+    # 3. GUIの窓を消す
     try:
-        plt.close("all")
+        root.withdraw() # 窓を消す
+        root.quit()     # メインループを終了
     except:
         pass
 
-    # 4. Tkinterのメインループを止める
-    try:
-        root.quit()
-        # root.update() を呼んで、溜まっている残務処理を消化させる
-        root.update()
-        # ウィンドウを破壊してリソースを解放
-        root.destroy()
-    except Exception:
-        # すでに閉じられている場合などのエラーは無視
-        pass
-
+    # 4. 【重要】エラーメッセージを封じるための即時終了
+    # ここまでの手順で「データ」と「子プロセス」の安全は確保されました。
+    # この後 Python が自動で行う「メモリの掃除」がエラーの原因なので、
+    # その掃除をスキップさせるために os._exit(0) を使います。
+    # これが最も「安全かつ静か」な終了方法です。
+    import os
+    os._exit(0)
 def save_graph():
     global current_fig
     import getpass
