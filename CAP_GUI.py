@@ -8,9 +8,12 @@ import csv
 import sys
 from datetime import datetime
 import pandas as pd
+import matplotlib
+matplotlib.use("TkAgg") 
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates 
 import matplotlib.cm as cm
+matplotlib.use("TkAgg")  # 追加：Tkinter用バックエンドを明示的に指定
 
 # ========= 設定 =========
 INTERFACE = "wlx105a95baef46"
@@ -76,6 +79,7 @@ def log(msg):
     if not running: return
     try:
         if not root or not root.winfo_exists(): return
+        if not root.winfo_exists(): return 
     except:
         return
 
@@ -152,10 +156,22 @@ def analyze_beacons():
                     ap_info.append(key)
                     if bssid:
                         ap_bssid_set.add(bssid)
-    ap_list.delete(0, tk.END)
-    for ssid, ch in sorted(ap_info, key=lambda x: (x[1], x[0])):
-        ap_list.insert(tk.END, f"CH {ch} | {ssid}")
-    log(f"[解析] 検出AP数: {len(ap_info)}")
+
+    # --- UI操作を関数にまとめて root.after で呼び出す ---
+    def update_ui_list():
+        if not running: return  # アプリ終了中なら何もしない
+        try:
+            ap_list.delete(0, tk.END)
+            for ssid, ch in sorted(ap_info, key=lambda x: (x[1], x[0])):
+                ap_list.insert(tk.END, f"CH {ch} | {ssid}")
+            log(f"[解析] 検出AP数: {len(ap_info)}")
+        except:
+            pass
+
+    # メインスレッド（GUIスレッド）に実行を依頼する
+    root.after(0, update_ui_list)
+    
+
 
 def scan_beacons():
     threading.Thread(target=beacon_task, daemon=True).start()
@@ -518,6 +534,7 @@ def start_capture():
 
 def stop_and_exit():
     global tcpdump_proc, running
+    global time_var, mac_mode, exclude_zero_var, show_density_var, search_var
     running = False
     
     # 1. キャプチャを安全に止める（データ保護）
@@ -532,7 +549,16 @@ def stop_and_exit():
     
     # 2. グラフを閉じる
     plt.close("all")
-    
+
+    # 重要：GUIを閉じる直前に変数を明示的に消去
+    try:
+        del time_var
+        del mac_mode
+        del exclude_zero_var
+        del show_density_var
+        del search_var
+    except:
+        pass
     # 3. GUIの窓を消す
     try:
         root.withdraw() # 窓を消す
@@ -540,13 +566,9 @@ def stop_and_exit():
     except:
         pass
 
-    # 4. 【重要】エラーメッセージを封じるための即時終了
-    # ここまでの手順で「データ」と「子プロセス」の安全は確保されました。
-    # この後 Python が自動で行う「メモリの掃除」がエラーの原因なので、
-    # その掃除をスキップさせるために os._exit(0) を使います。
-    # これが最も「安全かつ静か」な終了方法です。
     import os
     os._exit(0)
+    
 def save_graph():
     global current_fig
     import getpass
