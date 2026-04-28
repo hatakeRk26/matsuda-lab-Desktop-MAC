@@ -198,18 +198,17 @@ def extract_macs(pcap_file):
     sta_records = {}
     sta_sessions = {}
     csv_buffer = []
-    log("========== MAC + RSSI  ==========")
+    log("========== MAC分類解析開始  ==========")
     with PcapReader(pcap_file) as packets:
         for pkt in packets:
             if not pkt.haslayer(Dot11):
                 continue
             dot11 = pkt[Dot11]
-            if dot11.type != 0 or dot11.subtype != 4:
+            if dot11.type != 0 or dot11.subtype != 4: # Probe Requestのみ
                 continue
-            if not dot11.addr2:
-                continue
+            
             mac = dot11.addr2
-            if mac in ap_bssid_set:
+            if not mac or mac in ap_bssid_set:
                 continue
                 
             # --- IE (Information Elements) の抽出 ---
