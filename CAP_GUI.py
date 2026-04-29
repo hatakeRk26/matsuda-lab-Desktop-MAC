@@ -50,6 +50,62 @@ current_fig = None
 def is_local_mac(mac):
     first_byte = int(mac.split(":")[0], 16)
     return (first_byte & 0b00000010) != 0
+    
+def get_wps_uuid(elt_info):
+    """Vendor Specific IEの中からWPSのUUID(0x1047)を抽出する"""
+    try:
+        # WPSのOUIは 00:50:f2 (Microsoft) で、タイプが 04
+        if not elt_info.startswith(b'\x00P\xf2\x04'):
+            return None
+        pos = 4
+        while pos + 4 <= len(elt_info):
+            attr_type = int.from_bytes(elt_info[pos:pos+2], 'big')
+            attr_len = int.from_bytes(elt_info[pos+2:pos+4], 'big')
+            if attr_type == 0x1047: # UUID
+                return elt_info[pos+4 : pos+4+attr_len].hex()
+            pos += 4 + attr_len
+    except:
+        pass
+    return None
+    
+def get_mac_color(mac):
+    """MAC分類に基づいて色を返す。データがない場合はアドレス形式から推測する。"""
+    if mac.lower() == TARGET_MAC.lower():
+        return "limegreen"
+    
+    # 1. 解析データ（辞書）から取得を試みる
+    cat = mac_to_category.get(mac, None)
+    
+    if cat == "Global (Universal)":
+        return "black"
+    elif cat == "Local (P2P/Service-Fixed)":
+        return "blue"
+    elif cat == "Local (Randomized)":
+        return "red"
+    
+    # 2. 辞書にデータがない（アプリ再起動後など）場合のフォールバック
+    if is_local_mac(mac):
+        return "red"   # ローカルアドレスなら一旦赤
+    return "black"     # それ以外（グローバル）なら黒
+    
+def get_wps_uuid(elt_info):
+    """Vendor Specific IEの中からWPSのUUID(0x1047)を抽出する"""
+    try:
+        # WPSのOUIは 00:50:f2 (Microsoft) で、タイプが 04
+        if not elt_info.startswith(b'\x00P\xf2\x04'):
+            return None
+        
+        # OUI(4バイト)を飛ばして属性解析開始
+        pos = 4
+        while pos + 4 <= len(elt_info):
+            attr_type = int.from_bytes(elt_info[pos:pos+2], 'big')
+            attr_len = int.from_bytes(elt_info[pos+2:pos+4], 'big')
+            if attr_type == 0x1047: # UUID-E / UUID-R の属性ID
+                return elt_info[pos+4 : pos+4+attr_len].hex()
+            pos += 4 + attr_len
+    except:
+        pass
+    return None
 
 def manual_channel_set(event=None):
     global selected_channel
@@ -73,7 +129,9 @@ if not os.path.exists(CSV_FILE):
         "channel",
         "seq",
         "ie_fingerprint",
-        "vendor"])
+        "vendor",
+        "category"
+        ])
 
 def log(msg):
     if not running: return
@@ -191,7 +249,10 @@ def on_ap_select(event):
     channel_label.config(text=f"選択中チャネル: CH {ch}")
     start_btn.config(state="normal")
 
+mac_to_category = {}
+
 def extract_macs(pcap_file):
+    global mac_to_category
     if not os.path.exists(pcap_file):
         log("[MAC抽出] pcap無し")
         return
@@ -210,7 +271,13 @@ def extract_macs(pcap_file):
             mac = dot11.addr2
             if not mac or mac in ap_bssid_set:
                 continue
-                
+
+            # --- 判定フラグの初期化 ---
+            is_local = is_local_mac(mac)
+            is_p2p_service = False
+            detected_ssid = ""
+            detected_uuid = "" 
+            
             # --- IE (Information Elements) の抽出 ---
             ie_ids = []
             detected_vendors = [] # メーカー名を格納するリスト
@@ -219,17 +286,38 @@ def extract_macs(pcap_file):
             elt = pkt.getlayer(Dot11Elt)
             while elt:
                 if hasattr(elt, "ID"):
-                    ie_ids.append(str(elt.ID))
+                    ie_ids.append(str(elt.ID)) 
+                    # SSIDの取得とチェック
+                    if elt.ID == 0:
+                        try:
+                            detected_ssid = elt.info.decode(errors="ignore")
+                            if detected_ssid.startswith("DIRECT-"):
+                                is_p2p_service = True
+                        except:
+                            pass
                     
-                    # IDが221（Vendor Specific）の場合、メーカーを特定
-                    if elt.ID == 221 and len(elt.info) >= 3:
-                        # 最初の3バイトを16進数文字列にする (例: "0017f2")
-                        oui = elt.info[:3].hex()
-                        vendor_name = OUI_MAP.get(oui, f"Unknown({oui})")
-                        if vendor_name not in detected_vendors:
-                            detected_vendors.append(vendor_name)
+                    # Vendor Specific (221) の中から Wi-Fi Direct (50:6f:9a) を探す
+                    elif elt.ID == 221:
+                        # Wi-Fi Direct (50:6f:9a) のチェック
+                        if len(elt.info) >= 3 and elt.info[:3].hex() == "506f9a":
+                            is_p2p_service = True
                             
+                        # WPS UUIDの抽出（別途定義した関数 get_wps_uuid を呼び出す）
+                        uuid = get_wps_uuid(elt.info)
+                        if uuid:
+                            detected_uuid = uuid
+                
                 elt = elt.payload.getlayer(Dot11Elt)
+
+            # --- 分類ロジック ---
+            if not is_local:
+                mac_category = "Global (Universal)"
+            else:
+                if is_p2p_service:
+                    mac_category = "Local (P2P/Service-Fixed)"
+                else:
+                    mac_category = "Local (Randomized)"
+                    
             # IDをカンマ区切りの文字列にする（これがフィンガープリントになる）
             ie_fingerprint = ",".join(ie_ids)
             # 見つかったメーカー名を文字列にする
@@ -243,7 +331,7 @@ def extract_macs(pcap_file):
             pkt_time = float(pkt.time)
             rssi = getattr(pkt, "dBm_AntSignal", None)
             
-            # csv_buffer
+            # --- CSV保存用のデータ作成 (列を追加したければここを調整) ---
             csv_buffer.append([
                 datetime.fromtimestamp(pkt_time).strftime("%Y-%m-%d %H:%M:%S.%f"),
                 "STA", 
@@ -252,13 +340,22 @@ def extract_macs(pcap_file):
                 selected_channel, 
                 seq,
                 ie_fingerprint,
-                vendor_str
+                vendor_str,
+                mac_category
             ])
 
             if mac not in sta_records:
-                sta_records[mac] = {"first": pkt_time, "last": pkt_time, "rssi_sum": 0, "rssi_count": 0}
+                sta_records[mac] = {
+                    "first": pkt_time, 
+                    "last": pkt_time, 
+                    "rssi_sum": 0, 
+                    "rssi_count": 0,
+                    "uuid": detected_uuid 
+                }
             else:
                 sta_records[mac]["last"] = pkt_time
+                if detected_uuid:
+                    sta_records[mac]["uuid"] = detected_uuid
             if rssi is not None:
                 sta_records[mac]["rssi_sum"] += rssi
                 sta_records[mac]["rssi_count"] += 1
@@ -270,6 +367,7 @@ def extract_macs(pcap_file):
                     last_session[1] = pkt_time
                 else:
                     sta_sessions[mac].append([pkt_time, pkt_time])
+            mac_to_category[mac] = mac_category
 
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
@@ -278,88 +376,113 @@ def extract_macs(pcap_file):
     session_file = "sessions.csv"
     with open(session_file, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["mac", "start", "end", "duration"])
+        writer.writerow(["mac", "start", "end", "duration", "category"])
         for mac, sessions in sta_sessions.items():
+            cat = mac_to_category.get(mac, "Unknown")
             for start, end in sessions:
-                writer.writerow([mac, datetime.fromtimestamp(start), datetime.fromtimestamp(end), end - start])
+                writer.writerow([mac, datetime.fromtimestamp(start), datetime.fromtimestamp(end), end - start, cat])
     
     for mac, data in sta_records.items():
         lifetime = data["last"] - data["first"]
         lifetime_str = f"{int(lifetime)}秒" if lifetime >= 1 else f"{lifetime:.4f}秒"
         avg_rssi = int(data["rssi_sum"] / data["rssi_count"]) if data["rssi_count"] > 0 else None
-        mac_type = "LOCAL" if is_local_mac(mac) else "UNIVERSAL"
-        vendor = data.get("vendor", "Unknown") # 特定したメーカー名
-        log(f"STA {mac} [{mac_type}] AVG_RSSI={avg_rssi} lifetime={lifetime_str}")
+        
+        # 分類を表示
+        cat = mac_to_category.get(mac, "Unknown") 
+        
+        uuid_info = f" UUID={data['uuid']}" if data.get("uuid") else "" # ←【3. ログ表示】
+        log(f"[{cat}] {mac} AVG_RSSI={avg_rssi} lifetime={lifetime_str}{uuid_info}")
+    
     log(f"STA数: {len(sta_records)}")
 
+
+    
 def generate_timeline():
     global current_fig
     from matplotlib.ticker import FuncFormatter, MultipleLocator
     plt.close("all")
+    
     session_file = "sessions.csv"
     if not os.path.exists(session_file) or not os.path.exists(CSV_FILE):
         log("[Timeline] データがありません")
         return
-    obs_df = pd.read_csv(CSV_FILE)
-    avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
-    df = pd.read_csv(session_file)
-    df["start"] = pd.to_datetime(df["start"])
-    df = df[df["duration"] > 0] if exclude_zero_var.get() else df[df["duration"] >= 0]
-    if df.empty: return
-    df = df.sort_values("duration", ascending=False)
-    unique_macs = df["mac"].unique()
-    base_time = df["start"].min()
-    fig, ax = plt.subplots(figsize=(13, max(6, len(unique_macs) * 0.4)))
-    current_fig = fig
 
-    ax.tick_params(axis='y', labelsize=5) 
-    ax.xaxis.set_major_locator(MultipleLocator(60))
-    ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0)
+    try:
+        # --- ここから段落を1段下げます ---
+        df = pd.read_csv(session_file)
+        if df.empty:
+            log("[Timeline] 滞在データが空です")
+            return
+            
+        if "category" in df.columns:
+            mac_to_category.update(dict(zip(df['mac'], df['category'])))    
+        
+        obs_df = pd.read_csv(CSV_FILE)
+        if "mac" not in obs_df.columns:
+            log("[Timeline] CSVが不完全です。一度削除してキャプチャし直してください")
+            return
 
-    for _, row in df.iterrows():
-        start_sec = (row["start"] - base_time).total_seconds()
-        mac = row["mac"]
-        is_target = (mac.lower() == TARGET_MAC.lower())
-        color = "limegreen" if is_target else ("red" if is_local_mac(mac) else "black")
+        avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
+        
+        df["start"] = pd.to_datetime(df["start"])
+        df = df[df["duration"] > 0] if exclude_zero_var.get() else df[df["duration"] >= 0]
+        
+        if df.empty:
+            log("[Timeline] 表示対象のデータがありません")
+            return
 
-        if is_target:
-            ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
+        df = df.sort_values("duration", ascending=False)
+        unique_macs = df["mac"].unique()
+        base_time = df["start"].min()
 
-        if row["duration"] == 0:
-            ax.scatter(start_sec, mac, color=color, s=50, marker='o', zorder=5)
-        else:
-            ax.barh(mac, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
-    
-    ax.set_yticks(range(len(unique_macs)))
-    ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in unique_macs])
-    ax.set_ylim(-0.5, len(unique_macs) - 0.5) 
-    ax.margins(y=0)
-    
-    ytick_labels = ax.get_yticklabels()
-    for i, mac in enumerate(unique_macs):
-        if mac.lower() == TARGET_MAC.lower():
-            ytick_labels[i].set_color("limegreen")
-            ytick_labels[i].set_weight("bold")
-        elif is_local_mac(mac):
-            ytick_labels[i].set_color("red")
-        else:
-            ytick_labels[i].set_color("black")
+        fig, ax = plt.subplots(figsize=(13, max(6, len(unique_macs) * 0.4)))
+        current_fig = fig
 
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
-    ax.set_xlim(0, time_var.get() * 60)
-    ax.set_title("WiFi STA Presence Timeline", fontsize=12)
-    
-    ax.text(0.5, 0.5, f"{time_var.get()} min Capture", 
-            transform=ax.transAxes, 
-            fontsize=40, color='gray', alpha=0.15, 
-            ha='center', va='center', fontweight='bold', 
-            zorder=0) 
+        ax.tick_params(axis='y', labelsize=5) 
+        ax.xaxis.set_major_locator(MultipleLocator(60))
+        ax.grid(axis='x', linestyle='--', alpha=0.5, zorder=0)
 
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
-    
-    plt.tight_layout()
-    plt.show(block=False)
+        for _, row in df.iterrows():
+            mac = row["mac"]
+            start_sec = (row["start"] - base_time).total_seconds()
+            bar_color = get_mac_color(mac) 
 
+            if mac.lower() == TARGET_MAC.lower():
+                ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.4, zorder=1)
+
+            if row["duration"] == 0:
+                ax.scatter(start_sec, mac, color=bar_color, s=50, marker='o', zorder=5)
+            else:
+                ax.barh(mac, max(row["duration"], 1.0), left=start_sec, color=bar_color, height=0.6, alpha=0.8, zorder=3)
+        
+        ax.set_yticks(range(len(unique_macs)))
+        ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in unique_macs])
+        ax.set_ylim(-0.5, len(unique_macs) - 0.5) 
+        ax.margins(y=0)
+        
+        ytick_labels = ax.get_yticklabels()
+        for i, mac in enumerate(unique_macs):
+            label_color = get_mac_color(mac)
+            ytick_labels[i].set_color(label_color)
+            if mac.lower() == TARGET_MAC.lower():
+                ytick_labels[i].set_weight("bold")
+
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
+        ax.set_xlim(0, time_var.get() * 60)
+        ax.set_title("WiFi STA Presence Timeline (Categorized Color)", fontsize=12)
+        
+        ax.text(0.5, 0.5, f"{time_var.get()} min Capture", 
+                transform=ax.transAxes, 
+                fontsize=40, color='gray', alpha=0.15, 
+                ha='center', va='center', fontweight='bold', 
+                zorder=0) 
+        
+        plt.tight_layout()
+        plt.show(block=False)
+
+    except Exception as e:
+        log(f"[Timeline] エラー発生: {e}")
+        
 def generate_grouped_rssi_timeline():
     global current_fig
     from matplotlib.ticker import FuncFormatter, MultipleLocator
@@ -370,12 +493,16 @@ def generate_grouped_rssi_timeline():
     if not os.path.exists(session_file) or not os.path.exists(CSV_FILE):
         log("[Group] データがありません")
         return
-
+    
+    df = pd.read_csv(session_file)
+    if "category" in df.columns:
+        mac_to_category.update(dict(zip(df['mac'], df['category'])))    
+    
+    
     obs_df = pd.read_csv(CSV_FILE)
     obs_df["timestamp"] = pd.to_datetime(obs_df["timestamp"])
     avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
     
-    df = pd.read_csv(session_file)
     df["start"] = pd.to_datetime(df["start"])
     df = df[df["duration"] > 0] if exclude_zero_var.get() else df[df["duration"] >= 0]
     # RSSI順にソート
@@ -448,18 +575,20 @@ def generate_grouped_rssi_timeline():
 
         mac_sessions = df[df["mac"] == mac]
         is_target = (mac.lower() == TARGET_MAC.lower())
-        line_color = "limegreen" if is_target else ("red" if is_local_mac(mac) else "black")
+        color = get_mac_color(mac)
         
         for _, row in mac_sessions.iterrows():
             start_sec = (row["start"] - base_time).total_seconds()
             
-            if is_target:
+            if mac.lower() == TARGET_MAC.lower():
                 ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
                 
             if row["duration"] == 0:
-                ax.scatter(start_sec, i, color=line_color, s=35, marker='o', zorder=5)
+                # 3. line_color をやめて color に統一
+                ax.scatter(start_sec, i, color=color, s=35, marker='o', zorder=5)
             else:
-                ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=line_color, height=0.6, alpha=0.8, zorder=3)
+                # 4. line_color をやめて color に統一
+                ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
 
     # 軸の設定
     ax.set_yticks(range(len(sorted_macs)))
@@ -520,7 +649,9 @@ def start_capture():
         "channel",
         "seq",
         "ie_fingerprint",
-        "vendor"])
+        "vendor",
+        "category"
+        ])
 
     duration = time_var.get()
     subprocess.run(["iw","dev",INTERFACE,"set","channel",str(selected_channel)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -533,39 +664,27 @@ def start_capture():
 
 def stop_and_exit():
     global tcpdump_proc, running
-    global time_var, mac_mode, exclude_zero_var, show_density_var, search_var
     running = False
     
-    # 1. キャプチャを安全に止める（データ保護）
+    # 1. キャプチャを安全に止める
     if tcpdump_proc and tcpdump_proc.poll() is None:
         try:
-            # 終了信号を送り、ファイルが正しく書き閉じられるのを待つ
             tcpdump_proc.terminate()
             tcpdump_proc.wait(timeout=1.0)
         except:
-            # 止まらなければ強制的に止める（ゾンビプロセス防止）
             tcpdump_proc.kill()
     
     # 2. グラフを閉じる
     plt.close("all")
 
-    # 重要：GUIを閉じる直前に変数を明示的に消去
+    # 3. GUIを終了する
+    # ※ del time_var などの削除処理はエラーの原因になるので消します
     try:
-        del time_var
-        del mac_mode
-        del exclude_zero_var
-        del show_density_var
-        del search_var
-    except:
-        pass
-    # 3. GUIの窓を消す
-    try:
-        root.withdraw() # 窓を消す
-        root.quit()     # メインループを終了
+        root.destroy() # quit() ではなく destroy() で窓を完全に破棄
     except:
         pass
 
-    import os
+    # 4. プロセスを強制終了
     os._exit(0)
     
 def save_graph():
