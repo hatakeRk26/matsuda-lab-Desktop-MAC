@@ -134,7 +134,9 @@ if not os.path.exists(CSV_FILE):
         "ie_fingerprint",
         "vendor",
         "category",
-        "os"
+        "os",
+        "probe_type", 
+        "target_ssid"
         ])
 
 def log(msg):
@@ -266,22 +268,35 @@ def on_ap_select(event):
 
 mac_to_category = {}
 
-def guess_os(ie_ids, vendors_raw, vendors_named):
-    """IEの並び順やベンダー情報からOSを推測する"""
+def guess_os(mac, ie_ids, vendors_raw, vendors_named):
+    """MACアドレスの持ち主を最優先し、その後に機能からOSを推測する"""
+    mac_prefix = mac.replace(":", "")[:6].lower()
     ie_str = ",".join(ie_ids)
-    # Apple
+
+    # --- 1. MACアドレスのハードウェアベンダーを最優先 ---
+    if mac_prefix in OUI_MAP:
+        vendor = OUI_MAP[mac_prefix]
+        if "Raspberry" in vendor:
+            return "Raspberry Pi"
+        if "Apple" in vendor:
+            return "Apple (Hardware)"
+
+    # --- 2. パケットの中身（ベンダーIE）に含まれる名前をチェック ---
     if "Apple" in vendors_named:
         return "Apple (iOS/Mac)"
     if "Raspberry" in vendors_named:
         return "Raspberry Pi"
-    # Android: P2P(506f9a)やWPS(0050f204)が特徴
+
+    # --- 3. 特定の機能タグ（OUI）からの推測 ---
     if "506f9a" in vendors_raw:
         return "Android (P2P)"
     if "0050f204" in vendors_raw:
         return "Android/Windows"
-    # 一般的なIEパターン（最近のスマホに多い構成）での推測
+    
+    # --- 4. IEの並び順（DNA）からの推測 ---
     if "107,191,221" in ie_str:
         return "Modern Mobile (Android/iOS)"
+        
     return "Unknown"
     
 def extract_macs(pcap_file):
@@ -314,17 +329,28 @@ def extract_macs(pcap_file):
             detected_vendors = [] # メーカー名を格納するリスト
             vendors_raw = [] # os判定用
             vendor_str = "Unknown"  # ← 最初に見つからなかった時用の値を入れておく
+            ie_dna = {} 
+            probe_type = "Broadcast"
+            target_ssid = ""
             
             elt = pkt.getlayer(Dot11Elt)
             while elt:
                 if hasattr(elt, "ID"):
                     ie_ids.append(str(elt.ID)) 
+                    
+                    if elt.ID in [45, 127, 191]:
+                        ie_dna[elt.ID] = elt.info.hex()
+                        
                     # SSIDの取得とチェック
                     if elt.ID == 0:
                         try:
-                            detected_ssid = elt.info.decode(errors="ignore")
-                            if detected_ssid.startswith("DIRECT-"):
-                                is_p2p_service = True
+                            s_val = elt.info.decode(errors="ignore")
+                            # 空（長さ0）や、ヌル文字1文字でなければ「Directed」
+                            if s_val and len(s_val) > 0 and elt.info != b'\x00':
+                                probe_type = "Directed"
+                                target_ssid = s_val
+                                if s_val.startswith("DIRECT-"):
+                                    is_p2p_service = True
                         except:
                             pass
                     
@@ -351,7 +377,8 @@ def extract_macs(pcap_file):
                 vendor_str = "|".join(set(detected_vendors)) # 重複を消して合体
             
             # 【追加】OS判定を呼び出す
-            os_guess_result = guess_os(ie_ids, ",".join(vendors_raw), vendor_str)
+            os_guess_result = guess_os(mac, ie_ids, ",".join(vendors_raw), vendor_str)
+            dna_str = ",".join([f"{k}:{v}" for k, v in sorted(ie_dna.items())])
 
             # --- 分類ロジック ---
             if not is_local:
@@ -386,7 +413,9 @@ def extract_macs(pcap_file):
                 ie_fingerprint,
                 vendor_str,
                 mac_category,
-                os_guess_result 
+                os_guess_result,
+                probe_type,
+                target_ssid
             ])
 
             if mac not in sta_records:
@@ -396,13 +425,19 @@ def extract_macs(pcap_file):
                     "rssi_sum": 0, 
                     "rssi_count": 0,
                     "uuid": detected_uuid,
-                    "os": os_guess_result 
+                    "os": os_guess_result,
+                    "dna": dna_str,  
+                    "ssids": {target_ssid} if target_ssid else set()
                 }
             else:
                 sta_records[mac]["last"] = pkt_time
+                sta_records[mac]["os"] = os_guess_result
                 if detected_uuid:
                     sta_records[mac]["uuid"] = detected_uuid
-                sta_records[mac]["os"] = os_guess_result
+                if target_ssid:
+                    sta_records[mac]["ssids"].add(target_ssid) 
+                if dna_str:
+                    sta_records[mac]["dna"] = dna_str
             if rssi is not None:
                 sta_records[mac]["rssi_sum"] += rssi
                 sta_records[mac]["rssi_count"] += 1
@@ -419,7 +454,26 @@ def extract_macs(pcap_file):
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerows(csv_buffer)
+    
+    # DNA照合による同一端末判定
+    dna_groups = {}
+    for m, data in sta_records.items():
+        dna = data.get("dna")
+        if dna: # DNAデータがある場合のみ
+            if dna not in dna_groups: dna_groups[dna] = []
+            dna_groups[dna].append(m)
 
+    log("========== 同一端末の証明（DNA照合） ==========")
+    match_found = False
+    for dna, macs in dna_groups.items():
+        if len(macs) > 1:
+            match_found = True
+            log(f"【⚠️同一DNA検出】 DNA: {dna[:30]}...")
+            for m in macs:
+                log(f"  └─ {m} ({mac_to_category[m]})")
+    if not match_found:
+        log("DNAの一致は見つかりませんでした")
+        
     session_file = "sessions.csv"
     with open(session_file, "w", newline="") as f:
         writer = csv.writer(f)
@@ -437,9 +491,9 @@ def extract_macs(pcap_file):
         # 分類を表示
         cat = mac_to_category.get(mac, "Unknown") 
         os_info = data.get("os", "Unknown") 
-        
         uuid_info = f" UUID={data['uuid']}" if data.get("uuid") else "" # ←【3. ログ表示】
-        log(f"[{cat}] {mac}  {os_info} AVG_RSSI={avg_rssi} lifetime={lifetime_str}{uuid_info}")
+        ssid_list = f" [探しているSSID: {', '.join(data['ssids'])}]" if data['ssids'] else ""
+        log(f"[{cat}] {mac}  {os_info} AVG_RSSI={avg_rssi} lifetime={lifetime_str}{uuid_info}{ssid_list}")
     
     log(f"STA数: {len(sta_records)}")
 
@@ -621,22 +675,39 @@ def generate_grouped_rssi_timeline():
 
         ax.axhspan(i - 0.5, i + 0.5, color=get_color_by_threshold(current_zone_th), alpha=0.6, zorder=0)
 
-        mac_sessions = df[df["mac"] == mac]
-        is_target = (mac.lower() == TARGET_MAC.lower())
-        color = get_mac_color(mac)
-        
-        for _, row in mac_sessions.iterrows():
-            start_sec = (row["start"] - base_time).total_seconds()
+        if mac.lower() == TARGET_MAC.lower():
+            # 【特定MAC（自分）専用の描画】
+            # CSV(obs_df)から、自分の全パケットを取り出す
+            my_packets = obs_df[obs_df["mac"].str.lower() == TARGET_MAC.lower()]
             
-            if mac.lower() == TARGET_MAC.lower():
-                ax.axvline(x=start_sec, color='limegreen', linestyle=':', linewidth=1.5, alpha=0.8, zorder=1)
+            for _, p in my_packets.iterrows():
+                # 時刻を数値（経過秒）に変換
+                p_time = pd.to_datetime(p["timestamp"])
+                t_sec = (p_time - base_time).total_seconds()
                 
-            if row["duration"] == 0:
-                # 3. line_color をやめて color に統一
-                ax.scatter(start_sec, i, color=color, s=35, marker='o', zorder=5)
-            else:
-                # 4. line_color をやめて color に統一
-                ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
+                # 垂直線（目印）を引く
+                ax.axvline(x=t_sec, color='limegreen', linestyle=':', linewidth=0.8, alpha=0.4, zorder=1)
+                
+                # 種類に応じて記号を変える
+                if p.get("probe_type") == "Directed":
+                    # ダイレクト（指名）は「濃い緑の大きな星印 ★」
+                    ax.scatter(t_sec, i, color="darkgreen", marker="*", s=160, zorder=6, edgecolors="white", linewidths=0.5)
+                    # ★の下にSSID名を表示
+                    if pd.notnull(p["target_ssid"]) and p["target_ssid"] != "":
+                        ax.text(t_sec, i - 0.25, p["target_ssid"], fontsize=5, color="darkgreen", ha="center", fontweight='normal')
+                else:
+                    # ブロードキャスト（一斉）は「明るい緑の丸印 ●」
+                    ax.scatter(t_sec, i, color="limegreen", marker="o", s=60, zorder=5, alpha=0.7)
+        else:
+            # 【他の一般MACの描画】今までの横棒スタイル
+            mac_sessions = df[df["mac"] == mac]
+            color = get_mac_color(mac)
+            for _, row in mac_sessions.iterrows():
+                start_sec = (row["start"] - base_time).total_seconds()
+                if row["duration"] == 0:
+                    ax.scatter(start_sec, i, color=color, s=35, marker='o', zorder=5)
+                else:
+                    ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
 
     # 軸の設定
     ax.set_yticks(range(len(sorted_macs)))
@@ -699,7 +770,9 @@ def start_capture():
         "ie_fingerprint",
         "vendor",
         "category",
-        "os"
+        "os",
+        "probe_type",
+        "target_ssid"
         ])
 
     duration = time_var.get()
