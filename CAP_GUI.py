@@ -38,6 +38,9 @@ OUI_MAP = {
     "005043": "Marvell",
     "002686": "Intel",
     "00212f": "Amazon",
+    "b827eb": "Raspberry Pi",
+    "dca632": "Raspberry Pi",
+    "e45f01": "Raspberry Pi",
     "506f9a": "Wi-Fi Alliance",
 }
 
@@ -130,24 +133,36 @@ if not os.path.exists(CSV_FILE):
         "seq",
         "ie_fingerprint",
         "vendor",
-        "category"
+        "category",
+        "os"
         ])
 
 def log(msg):
     if not running: return
     try:
         if not root or not root.winfo_exists(): return
-        if not root.winfo_exists(): return 
-    except:
-        return
+    except: return
 
     def _update():
         try:
             if not root.winfo_exists(): return
-            if TARGET_MAC in msg.lower():
-                log_text.insert(tk.END, msg + "\n", "green_mac")
+            
+            # --- ここで色（タグ）を決定 ---
+            m_lower = msg.lower()
+            if TARGET_MAC in m_lower:
+                tag = "green_mac"
+            elif "Local (Randomized)" in msg: # get_mac_colorの赤と同じ条件
+                tag = "red_mac"
+            elif "Local (P2P/Service-Fixed)" in msg: # get_mac_colorの青と同じ条件
+                tag = "blue_mac"
+            else:
+                tag = None # Global (Universal) などはデフォルト色（黒）
+
+            if tag:
+                log_text.insert(tk.END, msg + "\n", tag)
             else:
                 log_text.insert(tk.END, msg + "\n")
+                
             log_text.see(tk.END)
         except:
             pass
@@ -156,7 +171,7 @@ def log(msg):
         root.after(0, _update)
     except:
         pass
-
+        
 def wait_and_finish(pcap_file):
     global tcpdump_proc
     if tcpdump_proc:
@@ -251,6 +266,24 @@ def on_ap_select(event):
 
 mac_to_category = {}
 
+def guess_os(ie_ids, vendors_raw, vendors_named):
+    """IEの並び順やベンダー情報からOSを推測する"""
+    ie_str = ",".join(ie_ids)
+    # Apple
+    if "Apple" in vendors_named:
+        return "Apple (iOS/Mac)"
+    if "Raspberry" in vendors_named:
+        return "Raspberry Pi"
+    # Android: P2P(506f9a)やWPS(0050f204)が特徴
+    if "506f9a" in vendors_raw:
+        return "Android (P2P)"
+    if "0050f204" in vendors_raw:
+        return "Android/Windows"
+    # 一般的なIEパターン（最近のスマホに多い構成）での推測
+    if "107,191,221" in ie_str:
+        return "Modern Mobile (Android/iOS)"
+    return "Unknown"
+    
 def extract_macs(pcap_file):
     global mac_to_category
     if not os.path.exists(pcap_file):
@@ -272,15 +305,14 @@ def extract_macs(pcap_file):
             if not mac or mac in ap_bssid_set:
                 continue
 
-            # --- 判定フラグの初期化 ---
+            # --- 判定フラグ（変数）の初期化 ---
             is_local = is_local_mac(mac)
             is_p2p_service = False
             detected_ssid = ""
             detected_uuid = "" 
-            
-            # --- IE (Information Elements) の抽出 ---
             ie_ids = []
             detected_vendors = [] # メーカー名を格納するリスト
+            vendors_raw = [] # os判定用
             vendor_str = "Unknown"  # ← 最初に見つからなかった時用の値を入れておく
             
             elt = pkt.getlayer(Dot11Elt)
@@ -298,9 +330,15 @@ def extract_macs(pcap_file):
                     
                     # Vendor Specific (221) の中から Wi-Fi Direct (50:6f:9a) を探す
                     elif elt.ID == 221:
+                        raw_oui = elt.info[:4].hex() # OUIとタイプを抽出
+                        vendors_raw.append(raw_oui)  # ←【追加】生データを保存
                         # Wi-Fi Direct (50:6f:9a) のチェック
                         if len(elt.info) >= 3 and elt.info[:3].hex() == "506f9a":
                             is_p2p_service = True
+                            
+                        # メーカー名（OUI_MAPにある場合）
+                        if raw_oui[:6] in OUI_MAP:
+                            detected_vendors.append(OUI_MAP[raw_oui[:6]])
                             
                         # WPS UUIDの抽出（別途定義した関数 get_wps_uuid を呼び出す）
                         uuid = get_wps_uuid(elt.info)
@@ -308,6 +346,12 @@ def extract_macs(pcap_file):
                             detected_uuid = uuid
                 
                 elt = elt.payload.getlayer(Dot11Elt)
+                
+            if detected_vendors:
+                vendor_str = "|".join(set(detected_vendors)) # 重複を消して合体
+            
+            # 【追加】OS判定を呼び出す
+            os_guess_result = guess_os(ie_ids, ",".join(vendors_raw), vendor_str)
 
             # --- 分類ロジック ---
             if not is_local:
@@ -341,7 +385,8 @@ def extract_macs(pcap_file):
                 seq,
                 ie_fingerprint,
                 vendor_str,
-                mac_category
+                mac_category,
+                os_guess_result 
             ])
 
             if mac not in sta_records:
@@ -350,12 +395,14 @@ def extract_macs(pcap_file):
                     "last": pkt_time, 
                     "rssi_sum": 0, 
                     "rssi_count": 0,
-                    "uuid": detected_uuid 
+                    "uuid": detected_uuid,
+                    "os": os_guess_result 
                 }
             else:
                 sta_records[mac]["last"] = pkt_time
                 if detected_uuid:
                     sta_records[mac]["uuid"] = detected_uuid
+                sta_records[mac]["os"] = os_guess_result
             if rssi is not None:
                 sta_records[mac]["rssi_sum"] += rssi
                 sta_records[mac]["rssi_count"] += 1
@@ -389,9 +436,10 @@ def extract_macs(pcap_file):
         
         # 分類を表示
         cat = mac_to_category.get(mac, "Unknown") 
+        os_info = data.get("os", "Unknown") 
         
         uuid_info = f" UUID={data['uuid']}" if data.get("uuid") else "" # ←【3. ログ表示】
-        log(f"[{cat}] {mac} AVG_RSSI={avg_rssi} lifetime={lifetime_str}{uuid_info}")
+        log(f"[{cat}] {mac}  {os_info} AVG_RSSI={avg_rssi} lifetime={lifetime_str}{uuid_info}")
     
     log(f"STA数: {len(sta_records)}")
 
@@ -650,7 +698,8 @@ def start_capture():
         "seq",
         "ie_fingerprint",
         "vendor",
-        "category"
+        "category",
+        "os"
         ])
 
     duration = time_var.get()
@@ -790,7 +839,10 @@ log_frame = tk.LabelFrame(root, text="ログ")
 log_frame.pack(padx=10, pady=5, fill="both")
 log_text = tk.Text(log_frame, height=12)
 log_text.pack(fill="both")
+
 log_text.tag_config("green_mac", foreground="limegreen")
+log_text.tag_config("red_mac", foreground="red")
+log_text.tag_config("blue_mac", foreground="blue")
 log_text.tag_config("highlight", background="yellow")
 root.protocol("WM_DELETE_WINDOW", stop_and_exit) 
 
