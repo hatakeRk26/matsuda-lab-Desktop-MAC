@@ -900,9 +900,10 @@ def copy_log_to_clipboard():
     # ユーザーにお知らせ
     messagebox.showinfo("コピー完了", "ログの全内容をクリップボードにコピーしました")
     
-def save_graph():
+def save_graph(suffix=""): # suffix（おまけの文字）を受け取れるようにする
     global current_fig
     import getpass
+    import time 
     if current_fig is None:
         messagebox.showwarning("警告", "先にグラフを生成してください")
         return
@@ -911,10 +912,17 @@ def save_graph():
     os.makedirs(save_dir, exist_ok=True)
     user = getpass.getuser()
     os.system(f"sudo chown -R {user}:{user} '{save_dir}'")
-    filepath = os.path.join(save_dir, f"graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+    
+    # datetime.now() はそのまま使い、後ろに suffix を合体させる
+    now_str = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    filepath = os.path.join(save_dir, f"graph_{now_str}{suffix}.png")
+    
     current_fig.savefig(filepath)
     os.system(f"sudo chown {user}:{user} '{filepath}'")
     log(f"[保存] {filepath}")
+    
+    # 保存直後に少しだけ待つ（連続保存時のエラー防止）
+    time.sleep(0.2)
     
 def save_all_dna_graphs():
     if not global_dna_groups:
@@ -956,7 +964,7 @@ channel_entry.bind("<Return>", manual_channel_set)
 # 2. APリスト
 ap_frame = tk.LabelFrame(root, text="AP")
 ap_frame.pack(padx=10, pady=5, fill="both")
-ap_list = tk.Listbox(ap_frame, height=3)
+ap_list = tk.Listbox(ap_frame, height=5)
 ap_list.pack(fill="both")
 ap_list.bind("<<ListboxSelect>>", on_ap_select)
 
