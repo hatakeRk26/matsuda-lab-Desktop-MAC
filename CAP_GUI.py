@@ -267,6 +267,7 @@ def on_ap_select(event):
     start_btn.config(state="normal")
 
 mac_to_category = {}
+global_dna_groups = {}
 
 def guess_os(mac, ie_ids, vendors_raw, vendors_named):
     """MACアドレスの持ち主を最優先し、その後に機能からOSを推測する"""
@@ -495,10 +496,33 @@ def extract_macs(pcap_file):
         uuid_info = f" UUID={data['uuid']}" if data.get("uuid") else "" # ←【3. ログ表示】
         ssid_list = f" [探しているSSID: {', '.join(data['ssids'])}]" if data['ssids'] else ""
         log(f"[{cat}] {mac}  {os_info} AVG_RSSI={avg_rssi} lifetime={lifetime_str}{uuid_info}{ssid_list}")
+        
+    # --- UIのリストボックスを更新する処理 ---
+    global global_dna_groups
+    global_dna_groups = dna_groups  # 外部から参照できるように保存
+    
+    def update_dna_list_ui():
+        dna_listbox.delete(0, tk.END)
+        # MACアドレスが多い順に並べる
+        sorted_dnas = sorted(dna_groups.items(), key=lambda x: len(x[1]), reverse=True)
+        for dna, macs in sorted_dnas:
+            dna_listbox.insert(tk.END, f"({len(macs)}台) {dna}")
+            
+    root.after(0, update_dna_list_ui)
     
     log(f"STA数: {len(sta_records)}")
 
-
+def on_dna_list_select(event):
+    sel = dna_listbox.curselection()
+    if not sel:
+        return
+    text = dna_listbox.get(sel[0])
+    # "(x台) DNA文字..." という形式からDNA部分だけ抜く
+    selected_dna = text.split(") ", 1)[1]
+    
+    dna_filter_var.set(True)      # フィルタをONにする
+    dna_input_var.set(selected_dna) # 検索窓に代入
+    generate_grouped_rssi_timeline() # グラフ生成を実行
     
 def generate_timeline():
     global current_fig
@@ -850,6 +874,22 @@ def save_graph():
     current_fig.savefig(filepath)
     os.system(f"sudo chown {user}:{user} '{filepath}'")
     log(f"[保存] {filepath}")
+    
+def save_all_dna_graphs():
+    if not global_dna_groups:
+        messagebox.showwarning("警告", "先にキャプチャと解析を完了させてください")
+        return
+    
+    dna_filter_var.set(True)
+    for dna in global_dna_groups.keys():
+        dna_input_var.set(dna)
+        generate_grouped_rssi_timeline() # グラフ描画
+        save_graph()                     # 保存
+        plt.close("all")                 # 次のために閉じる
+    log("[一括保存] 全グループの保存が完了しました")
+
+# ボタンを配置（左フレームなどに追加）
+tk.Button(left_frame, text="全DNAグラフ一括保存", command=save_all_dna_graphs, fg="blue").pack(pady=5)
 
 # UI 構築
 root = tk.Tk()
@@ -907,6 +947,29 @@ dna_filter_frame.pack(padx=10, pady=5, fill="x")
 tk.Checkbutton(dna_filter_frame, text="特定のDNAで絞り込む", variable=dna_filter_var).pack(side="left", padx=5)
 tk.Label(dna_filter_frame, text="DNA値(先頭数文字でもOK):").pack(side="left")
 tk.Entry(dna_filter_frame, textvariable=dna_input_var, width=30).pack(side="left", padx=5)
+
+# --- DNAフィルタフレームの改造 ---
+dna_filter_frame = tk.LabelFrame(root, text="DNAフィルタ・一括解析")
+dna_filter_frame.pack(padx=10, pady=5, fill="x")
+
+# 上段：手動入力
+top_row = tk.Frame(dna_filter_frame)
+top_row.pack(fill="x", padx=5, pady=2)
+tk.Checkbutton(top_row, text="フィルタ有効", variable=dna_filter_var).pack(side="left")
+tk.Entry(top_row, textvariable=dna_input_var, width=30).pack(side="left", padx=5)
+
+# 下段：DNAリストボックス
+list_row = tk.Frame(dna_filter_frame)
+list_row.pack(fill="x", padx=5, pady=5)
+
+tk.Label(list_row, text="検出DNA一覧 (クリックで即表示):", font=("", 9)).pack(anchor="w")
+dna_listbox = tk.Listbox(list_row, height=5, font=("TkFixedFont", 9))
+dna_listbox.pack(side="left", fill="x", expand=True)
+dna_listbox.bind("<<ListboxSelect>>", on_dna_list_select)
+
+scrollbar = tk.Scrollbar(list_row, orient="vertical", command=dna_listbox.yview)
+scrollbar.pack(side="right", fill="y")
+dna_listbox.config(yscrollcommand=scrollbar.set)
 
 main_frame = tk.Frame(root)
 main_frame.pack(pady=5)
