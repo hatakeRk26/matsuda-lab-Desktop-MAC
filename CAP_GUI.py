@@ -936,12 +936,11 @@ root.title("MAC_GUI")
 # 変数の初期化
 time_var = tk.IntVar(value=5)
 mac_mode = tk.StringVar(value="unique")
-exclude_zero_var = tk.BooleanVar(value=True)
-show_density_var = tk.BooleanVar(value=True) 
+exclude_zero_var = tk.BooleanVar(value=False)
+show_density_var = tk.BooleanVar(value=False) 
 dna_filter_var = tk.BooleanVar(value=False)
 dna_input_var = tk.StringVar()
 search_var = tk.StringVar() 
-search_var.trace_add("write", search_log)
 
 # 1. 最上段フレーム
 top_frame = tk.Frame(root)
@@ -998,13 +997,6 @@ mac_frame.pack(side="left", padx=5)
 tk.Radiobutton(mac_frame, text="重複削除", variable=mac_mode, value="unique").pack(anchor="w")
 tk.Radiobutton(mac_frame, text="複数表示", variable=mac_mode, value="multi").pack(anchor="w")
 
-exclude_frame = tk.Frame(root)
-exclude_frame.pack(pady=5)
-tk.Checkbutton(exclude_frame, text="滞在時間0秒のMACを除外", variable=exclude_zero_var).pack()
-
-show_density_var = tk.BooleanVar(value=True) 
-tk.Checkbutton(exclude_frame, text="パケット密度グラフを表示する", variable=show_density_var).pack()
-
 # 5. メイン操作エリア
 main_frame = tk.Frame(root)
 main_frame.pack(pady=5)
@@ -1022,17 +1014,21 @@ tk.Button(left_frame, text="③ 滞在時間グラフ", command=generate_timelin
 tk.Button(left_frame, text="④ RSSI表示 (フィルタ有効)", command=generate_grouped_rssi_timeline, fg="purple").pack(pady=5, fill="x")
 tk.Button(left_frame, text="全DNAグラフ一括保存", command=save_all_dna_graphs, fg="blue", font=("", 9, "bold")).pack(pady=5, fill="x")
 tk.Button(left_frame, text="⑤ グラフ保存", command=save_graph).pack(pady=5, fill="x")
-tk.Button(btn_frame, text="ログをコピー", command=copy_log_to_clipboard, width=15).pack(side="left", padx=5)
 
 # ログ検索と終了
 tk.Label(right_frame, text="ログ検索").pack()
-entry = tk.Entry(right_frame, textvariable=search_var, width=25)
-entry.pack(pady=5)
-tk.Button(right_frame, text="終了する", fg="red", font=("", 10, "bold"), 
-          command=stop_and_exit, width=15).pack(pady=65) 
-          
+tk.Entry(right_frame, textvariable=search_var, width=20).pack(pady=5)
+exit_row = tk.Frame(right_frame)
+exit_row.pack(side="bottom", pady=10) 
+tk.Button(exit_row, text="終了する", fg="red", font=("", 10, "bold"), 
+          command=stop_and_exit, width=10).pack(side="left", padx=2)
+tk.Button(exit_row, text="📋", command=copy_log_to_clipboard, 
+          width=3, bg="#f0f0f0").pack(side="left", padx=2)  
+tk.Checkbutton(right_frame, text="滞在時間0秒のMACを除外", 
+               variable=exclude_zero_var).pack(anchor="w", padx=20)
+tk.Checkbutton(right_frame, text="パケット密度グラフを表示", 
+               variable=show_density_var).pack(anchor="w", padx=20)
 
-    
 # 6. ステータスとログ
 status_label = tk.Label(root, text="待機中")
 status_label.pack()
