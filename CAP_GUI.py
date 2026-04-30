@@ -468,7 +468,7 @@ def extract_macs(pcap_file):
     for dna, macs in dna_groups.items():
         if len(macs) > 1:
             match_found = True
-            log(f"【⚠️同一DNA検出】 DNA: {dna[:30]}...")
+            log(f"【⚠️同一DNA検出】 DNA: {dna}...")
             for m in macs:
                 log(f"  └─ {m} ({mac_to_category[m]})")
     if not match_found:
