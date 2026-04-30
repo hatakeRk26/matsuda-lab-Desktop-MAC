@@ -888,17 +888,19 @@ def save_all_dna_graphs():
         plt.close("all")                 # 次のために閉じる
     log("[一括保存] 全グループの保存が完了しました")
 
-# ボタンを配置（左フレームなどに追加）
-tk.Button(left_frame, text="全DNAグラフ一括保存", command=save_all_dna_graphs, fg="blue").pack(pady=5)
-
 # UI 構築
 root = tk.Tk()
 root.title("MAC_GUI")
 
+# 変数の初期化
 time_var = tk.IntVar(value=5)
 mac_mode = tk.StringVar(value="unique")
 exclude_zero_var = tk.BooleanVar(value=True)
+show_density_var = tk.BooleanVar(value=True) 
+dna_filter_var = tk.BooleanVar(value=False)
+dna_input_var = tk.StringVar()
 
+# 1. 最上段フレーム
 top_frame = tk.Frame(root)
 top_frame.pack(pady=5)
 tk.Button(top_frame, text="① Beaconスキャン", command=scan_beacons).pack(side="left", padx=5)
@@ -909,6 +911,7 @@ channel_entry = tk.Entry(manual_frame, width=6)
 channel_entry.pack(padx=5, pady=2)
 channel_entry.bind("<Return>", manual_channel_set)
 
+# 2. APリスト
 ap_frame = tk.LabelFrame(root, text="AP")
 ap_frame.pack(padx=10, pady=5, fill="both")
 ap_list = tk.Listbox(ap_frame, height=8)
@@ -918,6 +921,28 @@ ap_list.bind("<<ListboxSelect>>", on_ap_select)
 channel_label = tk.Label(root, text="チャネル未選択")
 channel_label.pack()
 
+# 3. DNAフィルタ・一括解析
+dna_filter_frame = tk.LabelFrame(root, text="DNAフィルタ・一括解析")
+dna_filter_frame.pack(padx=10, pady=5, fill="x")
+
+top_row = tk.Frame(dna_filter_frame)
+top_row.pack(fill="x", padx=5, pady=2)
+tk.Checkbutton(top_row, text="フィルタ有効", variable=dna_filter_var).pack(side="left")
+tk.Entry(top_row, textvariable=dna_input_var, width=30).pack(side="left", padx=5)
+
+list_row = tk.Frame(dna_filter_frame)
+list_row.pack(fill="x", padx=5, pady=5)
+tk.Label(list_row, text="検出DNA一覧 (クリックで表示):", font=("", 9)).pack(anchor="w")
+
+dna_listbox = tk.Listbox(list_row, height=5, font=("TkFixedFont", 9))
+dna_listbox.pack(side="left", fill="x", expand=True)
+dna_listbox.bind("<<ListboxSelect>>", on_dna_list_select)
+
+scrollbar = tk.Scrollbar(list_row, orient="vertical", command=dna_listbox.yview)
+scrollbar.pack(side="right", fill="y")
+dna_listbox.config(yscrollcommand=scrollbar.set)
+
+# 4. オプション設定
 option_frame = tk.Frame(root)
 option_frame.pack(pady=5)
 time_frame = tk.LabelFrame(option_frame, text="時間")
@@ -937,40 +962,7 @@ tk.Checkbutton(exclude_frame, text="滞在時間0秒のMACを除外", variable=e
 show_density_var = tk.BooleanVar(value=True) 
 tk.Checkbutton(exclude_frame, text="パケット密度グラフを表示する", variable=show_density_var).pack()
 
-# --- DNAフィルタ用変数の追加 ---
-dna_filter_var = tk.BooleanVar(value=False)
-dna_input_var = tk.StringVar()
-
-dna_filter_frame = tk.LabelFrame(root, text="DNAフィルタ（同一端末抽出）")
-dna_filter_frame.pack(padx=10, pady=5, fill="x")
-
-tk.Checkbutton(dna_filter_frame, text="特定のDNAで絞り込む", variable=dna_filter_var).pack(side="left", padx=5)
-tk.Label(dna_filter_frame, text="DNA値(先頭数文字でもOK):").pack(side="left")
-tk.Entry(dna_filter_frame, textvariable=dna_input_var, width=30).pack(side="left", padx=5)
-
-# --- DNAフィルタフレームの改造 ---
-dna_filter_frame = tk.LabelFrame(root, text="DNAフィルタ・一括解析")
-dna_filter_frame.pack(padx=10, pady=5, fill="x")
-
-# 上段：手動入力
-top_row = tk.Frame(dna_filter_frame)
-top_row.pack(fill="x", padx=5, pady=2)
-tk.Checkbutton(top_row, text="フィルタ有効", variable=dna_filter_var).pack(side="left")
-tk.Entry(top_row, textvariable=dna_input_var, width=30).pack(side="left", padx=5)
-
-# 下段：DNAリストボックス
-list_row = tk.Frame(dna_filter_frame)
-list_row.pack(fill="x", padx=5, pady=5)
-
-tk.Label(list_row, text="検出DNA一覧 (クリックで即表示):", font=("", 9)).pack(anchor="w")
-dna_listbox = tk.Listbox(list_row, height=5, font=("TkFixedFont", 9))
-dna_listbox.pack(side="left", fill="x", expand=True)
-dna_listbox.bind("<<ListboxSelect>>", on_dna_list_select)
-
-scrollbar = tk.Scrollbar(list_row, orient="vertical", command=dna_listbox.yview)
-scrollbar.pack(side="right", fill="y")
-dna_listbox.config(yscrollcommand=scrollbar.set)
-
+# 5. メイン操作エリア
 main_frame = tk.Frame(root)
 main_frame.pack(pady=5)
 left_frame = tk.Frame(main_frame)
@@ -978,18 +970,19 @@ left_frame.pack(side="left", padx=10)
 right_frame = tk.Frame(main_frame)
 right_frame.pack(side="left", padx=20, anchor="n")
 
-start_btn = tk.Button(left_frame, text="② キャプチャ開始", command=start_capture, state="disabled")
-start_btn.pack(pady=5)
-tk.Button(left_frame, text="③ 滞在時間グラフ生成", command=generate_timeline).pack(pady=5)
-tk.Button(left_frame, text="④ RSSIグループ表示", command=generate_grouped_rssi_timeline, fg="purple").pack(pady=5)
-tk.Button(left_frame, text="特定MACのRSSI解析", command=generate_target_rssi_graph, fg="darkgreen").pack(pady=5)
-tk.Button(left_frame, text="⑤ グラフ保存", command=save_graph).pack(pady=5)
+# ボタン類
+start_btn = tk.Button(left_frame, text="② キャプチャ開始", command=start_capture, state="disabled", bg="yellow")
+start_btn.pack(pady=5, fill="x")
+tk.Button(left_frame, text="③ 滞在時間グラフ", command=generate_timeline).pack(pady=5, fill="x")
+tk.Button(left_frame, text="④ RSSI表示 (フィルタ有効)", command=generate_grouped_rssi_timeline, fg="purple").pack(pady=5, fill="x")
+tk.Button(left_frame, text="全DNAグラフ一括保存", command=save_all_dna_graphs, fg="blue", font=("", 9, "bold")).pack(pady=5, fill="x")
+tk.Button(left_frame, text="⑤ グラフ保存", command=save_graph).pack(pady=5, fill="x")
 
+# ログ検索と終了
 search_var = tk.StringVar()
 tk.Label(right_frame, text="ログ検索").pack()
 entry = tk.Entry(right_frame, textvariable=search_var, width=25)
 entry.pack(pady=5)
-
 tk.Button(right_frame, text="終了する", fg="red", font=("", 10, "bold"), 
           command=stop_and_exit, width=15).pack(pady=65) 
           
@@ -1006,6 +999,7 @@ def search_log(*args):
         start = end
 search_var.trace_add("write", search_log)
 
+# 6. ステータスとログ
 status_label = tk.Label(root, text="待機中")
 status_label.pack()
 log_frame = tk.LabelFrame(root, text="ログ")
@@ -1013,6 +1007,7 @@ log_frame.pack(padx=10, pady=5, fill="both")
 log_text = tk.Text(log_frame, height=12)
 log_text.pack(fill="both")
 
+# ログの色設定
 log_text.tag_config("green_mac", foreground="limegreen")
 log_text.tag_config("red_mac", foreground="red")
 log_text.tag_config("blue_mac", foreground="blue")
