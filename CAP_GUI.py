@@ -877,6 +877,28 @@ def stop_and_exit():
 
     # 4. プロセスを強制終了
     os._exit(0)
+
+def search_log(*args):
+    keyword = search_var.get()
+    log_text.tag_remove("highlight", "1.0", tk.END)
+    if not keyword: return
+    start = "1.0"
+    while True:
+        pos = log_text.search(keyword, start, stopindex=tk.END, nocase=True)
+        if not pos: break
+        end = f"{pos}+{len(keyword)}c"
+        log_text.tag_add("highlight", pos, end)
+        start = end
+
+def copy_log_to_clipboard():
+    # ログの内容を最初(1.0)から最後(tk.END)まで取得
+    log_content = log_text.get("1.0", tk.END)
+    # クリップボードを一旦空にする
+    root.clipboard_clear()
+    # 内容をクリップボードに追加
+    root.clipboard_append(log_content)
+    # ユーザーにお知らせ
+    messagebox.showinfo("コピー完了", "ログの全内容をクリップボードにコピーしました")
     
 def save_graph():
     global current_fig
@@ -918,6 +940,8 @@ exclude_zero_var = tk.BooleanVar(value=True)
 show_density_var = tk.BooleanVar(value=True) 
 dna_filter_var = tk.BooleanVar(value=False)
 dna_input_var = tk.StringVar()
+search_var = tk.StringVar() 
+search_var.trace_add("write", search_log)
 
 # 1. 最上段フレーム
 top_frame = tk.Frame(root)
@@ -933,7 +957,7 @@ channel_entry.bind("<Return>", manual_channel_set)
 # 2. APリスト
 ap_frame = tk.LabelFrame(root, text="AP")
 ap_frame.pack(padx=10, pady=5, fill="both")
-ap_list = tk.Listbox(ap_frame, height=8)
+ap_list = tk.Listbox(ap_frame, height=3)
 ap_list.pack(fill="both")
 ap_list.bind("<<ListboxSelect>>", on_ap_select)
 
@@ -990,34 +1014,25 @@ right_frame = tk.Frame(main_frame)
 right_frame.pack(side="left", padx=20, anchor="n")
 
 # ボタン類
+btn_frame = tk.Frame(root)
+btn_frame.pack(pady=5)
 start_btn = tk.Button(left_frame, text="② キャプチャ開始", command=start_capture, state="disabled", bg="yellow")
 start_btn.pack(pady=5, fill="x")
 tk.Button(left_frame, text="③ 滞在時間グラフ", command=generate_timeline).pack(pady=5, fill="x")
 tk.Button(left_frame, text="④ RSSI表示 (フィルタ有効)", command=generate_grouped_rssi_timeline, fg="purple").pack(pady=5, fill="x")
 tk.Button(left_frame, text="全DNAグラフ一括保存", command=save_all_dna_graphs, fg="blue", font=("", 9, "bold")).pack(pady=5, fill="x")
 tk.Button(left_frame, text="⑤ グラフ保存", command=save_graph).pack(pady=5, fill="x")
+tk.Button(btn_frame, text="ログをコピー", command=copy_log_to_clipboard, width=15).pack(side="left", padx=5)
 
 # ログ検索と終了
-search_var = tk.StringVar()
 tk.Label(right_frame, text="ログ検索").pack()
 entry = tk.Entry(right_frame, textvariable=search_var, width=25)
 entry.pack(pady=5)
 tk.Button(right_frame, text="終了する", fg="red", font=("", 10, "bold"), 
           command=stop_and_exit, width=15).pack(pady=65) 
           
-def search_log(*args):
-    keyword = search_var.get()
-    log_text.tag_remove("highlight", "1.0", tk.END)
-    if not keyword: return
-    start = "1.0"
-    while True:
-        pos = log_text.search(keyword, start, stopindex=tk.END, nocase=True)
-        if not pos: break
-        end = f"{pos}+{len(keyword)}c"
-        log_text.tag_add("highlight", pos, end)
-        start = end
-search_var.trace_add("write", search_log)
 
+    
 # 6. ステータスとログ
 status_label = tk.Label(root, text="待機中")
 status_label.pack()
