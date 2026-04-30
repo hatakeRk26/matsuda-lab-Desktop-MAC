@@ -722,14 +722,33 @@ def generate_grouped_rssi_timeline():
         is_target = (mac.lower() == TARGET_MAC.lower())
         color = get_mac_color(mac)
         
+        last_label_time = {} 
+        
         for _, p in my_packets.iterrows():
             t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
             
             # 種類によって形と大きさを変える
+
             if p.get("probe_type") == "Directed":
                 m_shape = "^"  # 三角
                 m_size = 120 if is_target else 40  # ターゲットは大きく
                 m_color = "darkgreen" if is_target else color
+                # --- SSIDラベルの重なり防止ロジック ---
+                ssid = p["target_ssid"]
+                if pd.notnull(ssid) and ssid != "":
+                    # 同じSSIDの場合、前回の表示から2秒以上経過している場合のみ描画
+                    last_time = last_label_time.get(ssid, -999)
+                    if (t_sec - last_time) > 2.0: 
+                        ax.text(t_sec, i - 0.2, ssid, 
+                                fontsize=6,
+                                color=m_color,
+                                ha="left",
+                                va="bottom", 
+                                rotation=20,
+                                alpha=0.9,
+                                fontweight='bold' if is_target else 'normal',
+                                zorder=6)
+                        last_label_time[ssid] = t_sec # 描画した時間を記録
             else:
                 m_shape = "o"  # 丸
                 m_size = 60 if is_target else 20   # ターゲットは大きく
