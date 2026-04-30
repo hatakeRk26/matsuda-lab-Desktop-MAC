@@ -477,11 +477,12 @@ def extract_macs(pcap_file):
     session_file = "sessions.csv"
     with open(session_file, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["mac", "start", "end", "duration", "category"])
+        writer.writerow(["mac", "start", "end", "duration", "category", "dna"])
         for mac, sessions in sta_sessions.items():
             cat = mac_to_category.get(mac, "Unknown")
+            dna_val = sta_records.get(mac, {}).get("dna", "")
             for start, end in sessions:
-                writer.writerow([mac, datetime.fromtimestamp(start), datetime.fromtimestamp(end), end - start, cat])
+                writer.writerow([mac, datetime.fromtimestamp(start), datetime.fromtimestamp(end), end - start, cat, dna_val])
     
     for mac, data in sta_records.items():
         lifetime = data["last"] - data["first"]
@@ -609,7 +610,25 @@ def generate_grouped_rssi_timeline():
     df = df[df["duration"] > 0] if exclude_zero_var.get() else df[df["duration"] >= 0]
     # RSSI順にソート
     sorted_macs = sorted(df["mac"].unique(), key=lambda x: avg_rssi_map.get(x, -100), reverse=True)
-    if not sorted_macs: return
+    
+# --- 【追加】DNAフィルタリングロジック ---
+    if dna_filter_var.get():
+        target_dna_snippet = dna_input_var.get().strip()
+        if target_dna_snippet:
+            # 該当するDNAを持つMACアドレスだけを抽出
+            # df(sessions.csv) のdna列をチェック
+            filtered_macs = []
+            for m in sorted_macs:
+                # そのMACのDNAを取得
+                m_dna = df[df["mac"] == m]["dna"].iloc[0] if "dna" in df.columns else ""
+                if target_dna_snippet in str(m_dna):
+                    filtered_macs.append(m)
+            sorted_macs = filtered_macs
+            log(f"[Filter] DNA '{target_dna_snippet}' に一致する {len(sorted_macs)} 台を表示します")
+            
+    if not sorted_macs:
+        log("表示対象の端末がありません")
+        return
 
     base_time = obs_df["timestamp"].min()
     
@@ -672,42 +691,49 @@ def generate_grouped_rssi_timeline():
                 current_zone_th = th 
         
         last_rssi = rssi
-
         ax.axhspan(i - 0.5, i + 0.5, color=get_color_by_threshold(current_zone_th), alpha=0.6, zorder=0)
-
-        if mac.lower() == TARGET_MAC.lower():
-            # 【特定MAC（自分）専用の描画】
-            # CSV(obs_df)から、自分の全パケットを取り出す
-            my_packets = obs_df[obs_df["mac"].str.lower() == TARGET_MAC.lower()]
+        
+        # --- 2. 描画ロジック（ここを全MAC共通の形状判別に変更） ---
+        my_packets = obs_df[obs_df["mac"].str.lower() == mac.lower()]
+        is_target = (mac.lower() == TARGET_MAC.lower())
+        color = get_mac_color(mac)
+        
+        for _, p in my_packets.iterrows():
+            t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
             
+            # 種類によって形と大きさを変える
+            if p.get("probe_type") == "Directed":
+                m_shape = "^"  # 三角
+                m_size = 120 if is_target else 40  # ターゲットは大きく
+                m_color = "darkgreen" if is_target else color
+            else:
+                m_shape = "o"  # 丸
+                m_size = 60 if is_target else 20   # ターゲットは大きく
+                m_color = "limegreen" if is_target else color
+
+            # プロット
+            ax.scatter(t_sec, i, color=m_color, marker=m_shape, s=m_size, 
+                       alpha=0.8 if is_target else 0.5, zorder=5)
+
+            # ターゲットかつDirectedならSSID名を表示（元の機能維持）
+            if is_target and p.get("probe_type") == "Directed" and pd.notnull(p["target_ssid"]):
+                ax.text(t_sec, i - 0.25, p["target_ssid"], fontsize=5, color="darkgreen", ha="center")
+
+        # ターゲットの場合だけ垂直線を引く（元の機能維持）
+        if is_target:
             for _, p in my_packets.iterrows():
-                # 時刻を数値（経過秒）に変換
-                p_time = pd.to_datetime(p["timestamp"])
-                t_sec = (p_time - base_time).total_seconds()
-                
-                # 垂直線（目印）を引く
+                t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
                 ax.axvline(x=t_sec, color='limegreen', linestyle=':', linewidth=0.8, alpha=0.4, zorder=1)
+
+        # 滞在期間の補助線を細く入れる（パケット同士を繋いで見やすくするため）
+        mac_sessions = df[df["mac"] == mac]
+        for _, row in mac_sessions.iterrows():
+            start_sec = (row["start"] - base_time).total_seconds()
+            if row["duration"] > 0:
+                ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=color, height=0.1, alpha=0.2, zorder=3)
                 
-                # 種類に応じて記号を変える
-                if p.get("probe_type") == "Directed":
-                    # ダイレクト（指名）は「濃い緑の大きな星印 ★」
-                    ax.scatter(t_sec, i, color="darkgreen", marker="*", s=160, zorder=6, edgecolors="white", linewidths=0.5)
-                    # ★の下にSSID名を表示
-                    if pd.notnull(p["target_ssid"]) and p["target_ssid"] != "":
-                        ax.text(t_sec, i - 0.25, p["target_ssid"], fontsize=5, color="darkgreen", ha="center", fontweight='normal')
-                else:
-                    # ブロードキャスト（一斉）は「明るい緑の丸印 ●」
-                    ax.scatter(t_sec, i, color="limegreen", marker="o", s=60, zorder=5, alpha=0.7)
-        else:
-            # 【他の一般MACの描画】今までの横棒スタイル
-            mac_sessions = df[df["mac"] == mac]
-            color = get_mac_color(mac)
-            for _, row in mac_sessions.iterrows():
-                start_sec = (row["start"] - base_time).total_seconds()
-                if row["duration"] == 0:
-                    ax.scatter(start_sec, i, color=color, s=35, marker='o', zorder=5)
-                else:
-                    ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=color, height=0.6, alpha=0.8, zorder=3)
+
+
 
     # 軸の設定
     ax.set_yticks(range(len(sorted_macs)))
@@ -870,6 +896,17 @@ tk.Checkbutton(exclude_frame, text="滞在時間0秒のMACを除外", variable=e
 
 show_density_var = tk.BooleanVar(value=True) 
 tk.Checkbutton(exclude_frame, text="パケット密度グラフを表示する", variable=show_density_var).pack()
+
+# --- DNAフィルタ用変数の追加 ---
+dna_filter_var = tk.BooleanVar(value=False)
+dna_input_var = tk.StringVar()
+
+dna_filter_frame = tk.LabelFrame(root, text="DNAフィルタ（同一端末抽出）")
+dna_filter_frame.pack(padx=10, pady=5, fill="x")
+
+tk.Checkbutton(dna_filter_frame, text="特定のDNAで絞り込む", variable=dna_filter_var).pack(side="left", padx=5)
+tk.Label(dna_filter_frame, text="DNA値(先頭数文字でもOK):").pack(side="left")
+tk.Entry(dna_filter_frame, textvariable=dna_input_var, width=30).pack(side="left", padx=5)
 
 main_frame = tk.Frame(root)
 main_frame.pack(pady=5)
