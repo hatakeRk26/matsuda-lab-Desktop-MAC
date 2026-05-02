@@ -14,6 +14,11 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates 
 import matplotlib.cm as cm
 matplotlib.use("TkAgg")  # 追加：Tkinter用バックエンドを明示的に指定
+# --- 日本語表示の設定 ---
+from matplotlib import rcParams
+# Ubuntuなどで標準的な日本語フォントを指定
+rcParams['font.family'] = 'sans-serif'
+rcParams['font.sans-serif'] = ['Hiragino Maru Gothic Pro', 'Yu Gothic', 'Meiryo', 'TakaoExGothic', 'IPAPGothic', 'VL PGothic', 'Noto Sans CJK JP']
 
 # ========= 設定 =========
 INTERFACE = "wlx105a95baef46"
@@ -43,6 +48,26 @@ OUI_MAP = {
     "e45f01": "Raspberry Pi",
     "506f9a": "Wi-Fi Alliance",
 }
+
+# 学生名簿を格納する辞書
+student_db = {}
+
+def load_student_list():
+    global student_db
+    student_db = {}
+    if os.path.exists("students.csv"):
+        try:
+            with open("students.csv", "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # MACアドレスを小文字にして登録
+                    student_db[row['mac'].lower()] = f"{row['student_id']} {row['name']}"
+            print(f"名簿を読み込みました: {len(student_db)}名")
+        except Exception as e:
+            print(f"名簿読み込みエラー: {e}")
+
+# 起動時に実行
+load_student_list()
 
 tcpdump_proc = None
 selected_channel = None
@@ -151,7 +176,11 @@ def log(msg):
             
             # --- ここで色（タグ）を決定 ---
             m_lower = msg.lower()
-            if TARGET_MAC in m_lower:
+            # ターゲットMACそのもの、あるいはターゲットに紐づく名前が含まれていたら緑にする
+            # ターゲットの名前を取得しておく
+            target_info = student_db.get(TARGET_MAC.lower(), "").lower()
+            
+            if TARGET_MAC.lower() in m_lower or (target_info and target_info in m_lower):
                 tag = "green_mac"
             elif "Local (Randomized)" in msg: # get_mac_colorの赤と同じ条件
                 tag = "red_mac"
@@ -318,6 +347,12 @@ def extract_macs(pcap_file):
                 continue
             
             mac = dot11.addr2
+            mac = dot11.addr2.lower() 
+            
+            # 名簿にあるか確認
+            #student_info = student_db.get(mac, "未登録（ゲスト）")
+            #log(f"【出席検知】 {student_info} (MAC: {mac})")
+
             if not mac or mac in ap_bssid_set:
                 continue
 
@@ -455,93 +490,81 @@ def extract_macs(pcap_file):
         writer = csv.writer(f)
         writer.writerows(csv_buffer)
 
-    hybrid_groups = {}    # キー: ID, 値: MACアドレスのリスト
+# === 1. ハイブリッド識別グループの作成 (ここを最新化) ===
+    hybrid_groups = {}    # キー: UUID:xxx または DNA:xxx
     mac_to_hybrid_id = {} # 逆引き用
 
     for m, data in sta_records.items():
         u_val = data.get("uuid")
         d_val = data.get("dna")
         
-        # アルゴリズム：UUIDがあればUUIDを、なければDNAをキーにする
+        # 優先順位：UUID > DNA > MAC
         if u_val:
             h_id = f"UUID:{u_val}"
         elif d_val:
             h_id = f"DNA:{d_val}"
         else:
-            h_id = f"MAC:{m}" # どちらもなければ個別MAC
+            h_id = f"MAC:{m}"
 
         if h_id not in hybrid_groups:
             hybrid_groups[h_id] = []
         hybrid_groups[h_id].append(m)
         mac_to_hybrid_id[m] = h_id
-        
-    # DNA照合による同一端末判定
-    dna_groups = {}
-    for m, data in sta_records.items():
-        dna = data.get("dna")
-        if dna: # DNAデータがある場合のみ
-            if dna not in dna_groups: dna_groups[dna] = []
-            dna_groups[dna].append(m)
 
     log("========== 同一端末のハイブリッド判定 (UUID > DNA) ==========")
     match_found = False
-    for dna, macs in dna_groups.items():
+    for h_id, macs in hybrid_groups.items():
         if len(macs) > 1:
             match_found = True
-            log(f"【⚠️同一DNA検出】 DNA: {dna}...")
+            log(f"【⚠️同一端末検出】 ID: {h_id}")
             for m in macs:
                 log(f"  └─ {m} ({mac_to_category[m]})")
     if not match_found:
-        log("DNAの一致は見つかりませんでした")
+        log("UUID/DNAによる一致は見るかりませんでした")
         
+    # === 2. session_file 保存 (重要：列を増やして hybrid_id を保存) ===
     session_file = "sessions.csv"
     with open(session_file, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["mac", "start", "end", "duration", "category", "dna"])
+        # ヘッダーに hybrid_id と uuid を追加 (これが無いとグラフが動きません)
+        writer.writerow(["mac", "start", "end", "duration", "category", "dna", "uuid", "hybrid_id"])
         for mac, sessions in sta_sessions.items():
             cat = mac_to_category.get(mac, "Unknown")
-            dna_val = sta_records.get(mac, {}).get("dna", "")
+            rec = sta_records.get(mac, {})
+            h_id = mac_to_hybrid_id.get(mac, "")
             for start, end in sessions:
-                writer.writerow([mac, datetime.fromtimestamp(start), datetime.fromtimestamp(end), end - start, cat, dna_val])
+                writer.writerow([mac, datetime.fromtimestamp(start), datetime.fromtimestamp(end), 
+                                end - start, cat, rec.get("dna",""), rec.get("uuid",""), h_id])
     
+    # ログ詳細表示
     for mac, data in sta_records.items():
         lifetime = data["last"] - data["first"]
         lifetime_str = f"{int(lifetime)}秒" if lifetime >= 1 else f"{lifetime:.4f}秒"
         avg_rssi = int(data["rssi_sum"] / data["rssi_count"]) if data["rssi_count"] > 0 else None
-        
-        # 分類を表示
         cat = mac_to_category.get(mac, "Unknown") 
         os_info = data.get("os", "Unknown") 
-        uuid_info = f" UUID={data['uuid']}" if data.get("uuid") else "" # ←【3. ログ表示】
+        uuid_info = f" UUID={data['uuid']}" if data.get("uuid") else ""
         ssid_list = f" [探しているSSID: {', '.join(data['ssids'])}]" if data['ssids'] else ""
-        log(f"[{cat}] {mac}  {os_info} AVG_RSSI={avg_rssi} lifetime={lifetime_str}{uuid_info}{ssid_list}")
+        # --- 追加：名簿から名前を取得 ---
+        display_name = student_db.get(mac.lower(), mac) # 名簿になければMACアドレス
         
-    # --- UIのリストボックスを更新する処理 ---
+        # ログ出力（mac の代わりに display_name を表示）
+        log(f"[{cat}] {display_name} {os_info} RSSI={avg_rssi} {lifetime_str}{uuid_info}{ssid_list}")
+        
+    # === 3. UIのリストボックスをハイブリッド版で更新 ===
     global global_dna_groups
-    global_dna_groups = dna_groups  # 外部から参照できるように保存
+    global_dna_groups = hybrid_groups  # 以前の dna_groups を hybrid_groups で上書き
     
     def update_dna_list_ui():
         dna_listbox.delete(0, tk.END)
-        # MACアドレスが多い順に並べる
-        sorted_dnas = sorted(dna_groups.items(), key=lambda x: len(x[1]), reverse=True)
-        for dna, macs in sorted_dnas:
-            dna_listbox.insert(tk.END, f"({len(macs)}台) {dna}")
+        # UUIDがあるもの、または複数台あるものを優先して表示
+        sorted_ids = sorted(hybrid_groups.items(), key=lambda x: (len(x[1]), x[0].startswith("UUID")), reverse=True)
+        for h_id, macs in sorted_ids:
+            if len(macs) > 1 or h_id.startswith("UUID"):
+                dna_listbox.insert(tk.END, f"({len(macs)}台) {h_id}")
             
     root.after(0, update_dna_list_ui)
-    
     log(f"STA数: {len(sta_records)}")
-
-def on_dna_list_select(event):
-    sel = dna_listbox.curselection()
-    if not sel:
-        return
-    text = dna_listbox.get(sel[0])
-    # "(x台) DNA文字..." という形式からDNA部分だけ抜く
-    selected_dna = text.split(") ", 1)[1]
-    
-    dna_filter_var.set(True)      # フィルタをONにする
-    dna_input_var.set(selected_dna) # 検索窓に代入
-    generate_grouped_rssi_timeline() # グラフ生成を実行
     
 def generate_timeline():
     global current_fig
@@ -614,7 +637,12 @@ def generate_timeline():
                 ax.barh(mac, max(row["duration"], 1.0), left=start_sec, color=bar_color, height=0.6, alpha=0.8, zorder=3)
         
         ax.set_yticks(range(len(unique_macs)))
-        ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in unique_macs])
+        labels = []
+        for m in unique_macs:
+            name = student_db.get(m.lower(), m) # 名簿にあれば名前、なければMACを表示
+            rssi = int(avg_rssi_map.get(m, 0))
+            labels.append(f"{name} ({rssi}dBm)")
+        ax.set_yticklabels(labels)
         ax.set_ylim(-0.5, len(unique_macs) - 0.5) 
         ax.margins(y=0)
         
@@ -822,24 +850,33 @@ def generate_grouped_rssi_timeline():
             start_sec = (row["start"] - base_time).total_seconds()
             if row["duration"] > 0:
                 ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=color, height=0.1, alpha=0.2, zorder=3)
-                
 
-
-
-    # 軸の設定
-    ax.set_yticks(range(len(sorted_macs)))
-    ax.set_yticklabels([f"{m} ({int(avg_rssi_map.get(m, 0))}dBm)" for m in sorted_macs])
+    # --- [修正版] 軸の設定と色付け ---
+    ax.set_yticks(range(len(sorted_macs))) # 1. どこにラベルを置くか先に決める
+    
+    new_labels = []
+    for m in sorted_macs:
+        # 名簿にあれば「学籍番号 名前」、なければ「MACアドレス」を表示
+        display_name = student_db.get(m.lower(), m)
+        rssi_val = int(avg_rssi_map.get(m, 0))
+        new_labels.append(f"{display_name} ({rssi_val}dBm)")
+    
+    ax.set_yticklabels(new_labels) # 2. ラベルの文字をセットする
     ax.set_ylim(-0.5, len(sorted_macs) - 0.5)
     ax.invert_yaxis()
-    
-    # ラベルの色分け
+
+    # 3. 強制的に描画を更新してからラベルオブジェクトを取得（IndexError対策）
+    plt.draw() 
     ytick_labels = ax.get_yticklabels()
+
+    # ラベルの色分け（安全なループ）
     for i, mac in enumerate(sorted_macs):
-        if mac.lower() == TARGET_MAC.lower():
-            ytick_labels[i].set_color("limegreen")
-            ytick_labels[i].set_weight("bold")
-        elif is_local_mac(mac):
-            ytick_labels[i].set_color("red")
+        if i < len(ytick_labels): # リストの範囲内であることを確認
+            if mac.lower() == TARGET_MAC.lower():
+                ytick_labels[i].set_color("limegreen")
+                ytick_labels[i].set_weight("bold")
+            elif is_local_mac(mac):
+                ytick_labels[i].set_color("red")
 
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
