@@ -399,7 +399,6 @@ def extract_macs(pcap_file):
             
             # シーケンス番号を取得
             seq = dot11.SC >> 4
-
             pkt_time = float(pkt.time)
             rssi = getattr(pkt, "dBm_AntSignal", None)
             
@@ -455,7 +454,27 @@ def extract_macs(pcap_file):
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerows(csv_buffer)
-    
+
+    hybrid_groups = {}    # キー: ID, 値: MACアドレスのリスト
+    mac_to_hybrid_id = {} # 逆引き用
+
+    for m, data in sta_records.items():
+        u_val = data.get("uuid")
+        d_val = data.get("dna")
+        
+        # アルゴリズム：UUIDがあればUUIDを、なければDNAをキーにする
+        if u_val:
+            h_id = f"UUID:{u_val}"
+        elif d_val:
+            h_id = f"DNA:{d_val}"
+        else:
+            h_id = f"MAC:{m}" # どちらもなければ個別MAC
+
+        if h_id not in hybrid_groups:
+            hybrid_groups[h_id] = []
+        hybrid_groups[h_id].append(m)
+        mac_to_hybrid_id[m] = h_id
+        
     # DNA照合による同一端末判定
     dna_groups = {}
     for m, data in sta_records.items():
@@ -464,7 +483,7 @@ def extract_macs(pcap_file):
             if dna not in dna_groups: dna_groups[dna] = []
             dna_groups[dna].append(m)
 
-    log("========== 同一端末の証明（DNA照合） ==========")
+    log("========== 同一端末のハイブリッド判定 (UUID > DNA) ==========")
     match_found = False
     for dna, macs in dna_groups.items():
         if len(macs) > 1:
@@ -535,7 +554,6 @@ def generate_timeline():
         return
 
     try:
-        # --- ここから段落を1段下げます ---
         df = pd.read_csv(session_file)
         if df.empty:
             log("[Timeline] 滞在データが空です")
@@ -549,6 +567,19 @@ def generate_timeline():
             log("[Timeline] CSVが不完全です。一度削除してキャプチャし直してください")
             return
 
+        # --- 【追加】ハイブリッドID（UUID/DNA）によるフィルタリングロジック ---
+        if dna_filter_var.get():
+            target_id = dna_input_var.get().strip()
+            if target_id and "hybrid_id" in df.columns:
+                # hybrid_id列に選択したIDが含まれる行だけを抽出
+                df = df[df["hybrid_id"].str.contains(target_id, na=False)]
+                log(f"[Timeline Filter] ID '{target_id}' の履歴を表示します")
+
+        if df.empty:
+            log("[Timeline] 表示対象のデータがありません")
+            return
+        # -----------------------------------------------------------
+
         avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
         
         df["start"] = pd.to_datetime(df["start"])
@@ -560,7 +591,7 @@ def generate_timeline():
 
         df = df.sort_values("duration", ascending=False)
         unique_macs = df["mac"].unique()
-        base_time = df["start"].min()
+        base_time = pd.to_datetime(obs_df["timestamp"]).min() # 全体の開始時間を基準にする
 
         fig, ax = plt.subplots(figsize=(13, max(6, len(unique_macs) * 0.4)))
         current_fig = fig
@@ -596,7 +627,7 @@ def generate_timeline():
 
         ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
         ax.set_xlim(0, time_var.get() * 60)
-        ax.set_title("WiFi STA Presence Timeline (Categorized Color)", fontsize=12)
+        ax.set_title("WiFi STA Presence Timeline (Filtered by Hybrid ID)", fontsize=12)
         
         ax.text(0.5, 0.5, f"{time_var.get()} min Capture", 
                 transform=ax.transAxes, 
@@ -609,7 +640,21 @@ def generate_timeline():
 
     except Exception as e:
         log(f"[Timeline] エラー発生: {e}")
-        
+
+def on_dna_list_select(event):
+    sel = dna_listbox.curselection()
+    if not sel:
+        return
+    text = dna_listbox.get(sel[0])
+    
+    # リストの "(2台) UUID:xxxx" または "(3台) DNA:xxxx" という文字列から
+    # "UUID:xxxx" や "DNA:xxxx" の部分だけを取り出す
+    selected_id = text.split(") ", 1)[1]
+    
+    dna_filter_var.set(True)      # フィルタをONにする
+    dna_input_var.set(selected_id) # 検索窓に代入
+    generate_grouped_rssi_timeline() # グラフ生成を実行
+    
 def generate_grouped_rssi_timeline():
     global current_fig
     from matplotlib.ticker import FuncFormatter, MultipleLocator
@@ -621,10 +666,10 @@ def generate_grouped_rssi_timeline():
         log("[Group] データがありません")
         return
     
+    # sessions.csv を読み込む（ここに新しい hybrid_id 列がある）
     df = pd.read_csv(session_file)
     if "category" in df.columns:
         mac_to_category.update(dict(zip(df['mac'], df['category'])))    
-    
     
     obs_df = pd.read_csv(CSV_FILE)
     obs_df["timestamp"] = pd.to_datetime(obs_df["timestamp"])
@@ -632,23 +677,26 @@ def generate_grouped_rssi_timeline():
     
     df["start"] = pd.to_datetime(df["start"])
     df = df[df["duration"] > 0] if exclude_zero_var.get() else df[df["duration"] >= 0]
-    # RSSI順にソート
+    
+    # 全てのユニークなMACアドレスをRSSI順に並べる
     sorted_macs = sorted(df["mac"].unique(), key=lambda x: avg_rssi_map.get(x, -100), reverse=True)
     
-# --- 【追加】DNAフィルタリングロジック ---
+    # --- 【修正箇所】ハイブリッドフィルタリングロジック ---
     if dna_filter_var.get():
-        target_dna_snippet = dna_input_var.get().strip()
-        if target_dna_snippet:
-            # 該当するDNAを持つMACアドレスだけを抽出
-            # df(sessions.csv) のdna列をチェック
+        target_id = dna_input_var.get().strip() # 検索窓の文字（UUID:... または DNA:...）
+        if target_id:
             filtered_macs = []
             for m in sorted_macs:
-                # そのMACのDNAを取得
-                m_dna = df[df["mac"] == m]["dna"].iloc[0] if "dna" in df.columns else ""
-                if target_dna_snippet in str(m_dna):
-                    filtered_macs.append(m)
+                # このMACアドレスが属する hybrid_id を sessions.csv(df) から探す
+                match = df[df["mac"] == m]
+                if not match.empty and "hybrid_id" in df.columns:
+                    h_id = str(match["hybrid_id"].iloc[0])
+                    # 検索文字が hybrid_id に含まれていれば、表示対象にする
+                    if target_id in h_id:
+                        filtered_macs.append(m)
             sorted_macs = filtered_macs
-            log(f"[Filter] DNA '{target_dna_snippet}' に一致する {len(sorted_macs)} 台を表示します")
+            log(f"[Filter] ID '{target_id}' に一致する {len(sorted_macs)} 台を表示します")
+    # ---------------------------------------------------
             
     if not sorted_macs:
         log("表示対象の端末がありません")
@@ -972,7 +1020,7 @@ channel_label = tk.Label(root, text="チャネル未選択")
 channel_label.pack()
 
 # 3. DNAフィルタ・一括解析
-dna_filter_frame = tk.LabelFrame(root, text="DNAフィルタ・一括解析")
+dna_filter_frame = tk.LabelFrame(root, text="個体識別フィルタ（UUID / DNA）")
 dna_filter_frame.pack(padx=10, pady=5, fill="x")
 
 top_row = tk.Frame(dna_filter_frame)
