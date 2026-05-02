@@ -67,7 +67,7 @@ def load_student_list():
             print(f"名簿読み込みエラー: {e}")
 
 # 起動時に実行
-load_student_list()
+#load_student_list()
 
 tcpdump_proc = None
 selected_channel = None
@@ -546,7 +546,9 @@ def extract_macs(pcap_file):
         uuid_info = f" UUID={data['uuid']}" if data.get("uuid") else ""
         ssid_list = f" [探しているSSID: {', '.join(data['ssids'])}]" if data['ssids'] else ""
         # --- 追加：名簿から名前を取得 ---
-        display_name = student_db.get(mac.lower(), mac) # 名簿になければMACアドレス
+        #display_name = student_db.get(mac.lower(), mac) # 名簿になければMACアドレス 
+        
+        display_name = mac
         
         # ログ出力（mac の代わりに display_name を表示）
         log(f"[{cat}] {display_name} {os_info} RSSI={avg_rssi} {lifetime_str}{uuid_info}{ssid_list}")
@@ -560,8 +562,7 @@ def extract_macs(pcap_file):
         # UUIDがあるもの、または複数台あるものを優先して表示
         sorted_ids = sorted(hybrid_groups.items(), key=lambda x: (len(x[1]), x[0].startswith("UUID")), reverse=True)
         for h_id, macs in sorted_ids:
-            if len(macs) > 1 or h_id.startswith("UUID"):
-                dna_listbox.insert(tk.END, f"({len(macs)}台) {h_id}")
+            dna_listbox.insert(tk.END, f"({len(macs)}台) {h_id}")
             
     root.after(0, update_dna_list_ui)
     log(f"STA数: {len(sta_records)}")
@@ -639,7 +640,8 @@ def generate_timeline():
         ax.set_yticks(range(len(unique_macs)))
         labels = []
         for m in unique_macs:
-            name = student_db.get(m.lower(), m) # 名簿にあれば名前、なければMACを表示
+            # name = student_db.get(m.lower(), m) # 名簿にあれば名前、なければMACを表示
+            name = m
             rssi = int(avg_rssi_map.get(m, 0))
             labels.append(f"{name} ({rssi}dBm)")
         ax.set_yticklabels(labels)
@@ -857,7 +859,8 @@ def generate_grouped_rssi_timeline():
     new_labels = []
     for m in sorted_macs:
         # 名簿にあれば「学籍番号 名前」、なければ「MACアドレス」を表示
-        display_name = student_db.get(m.lower(), m)
+        # display_name = student_db.get(m.lower(), m)
+        display_name = m
         rssi_val = int(avg_rssi_map.get(m, 0))
         new_labels.append(f"{display_name} ({rssi_val}dBm)")
     
