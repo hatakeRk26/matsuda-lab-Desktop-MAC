@@ -310,6 +310,7 @@ def on_ap_select(event):
 
 mac_to_category = {}
 global_dna_groups = {}
+known_dna_pool = {} 
 
 def guess_os(mac, ie_ids, vendors_raw, vendors_named):
     """MACアドレスの持ち主を最優先し、その後に機能からOSを推測する"""
@@ -436,6 +437,22 @@ def extract_macs(pcap_file):
             id_seq = ",".join(ie_ids)
             content_hex = "-".join([f"{k}:{v}" for k, v in sorted(ie_dna.items(), key=lambda x: str(x[0]))])
             dna_str = f"{id_seq}|{content_hex}" 
+            
+            # --- 【追加：自動学習ロジック】 ---
+            if not is_local:
+                # 本物のMACアドレス（Global）なら、指紋(DNA)と名前を紐付けて学習する
+                known_dna_pool[dna_str] = mac
+                # log(f"[DNA学習] {mac} の指紋を登録しました") # 確認したい場合はコメント解除
+            
+            # --- 【追加：照合ロジック】 ---
+            identified_name = ""
+            if is_local:
+                # ランダムMACの場合、過去に学習した指紋の中に同じものがないか探す
+                if dna_str in known_dna_pool:
+                    identified_name = known_dna_pool[dna_str]
+                    # OS情報の後ろに「推定される持ち主」を追記する
+                    os_guess_result += f" (Owner: {identified_name})"
+            # ---------------------------------
 
             # --- 分類ロジック ---
             if not is_local:
@@ -822,25 +839,6 @@ def generate_grouped_rssi_timeline():
         color = get_mac_color(mac)
         
         last_label_time = {} 
-        last_t_sec = None    # 直前の時間を覚える
-        last_seq_val = None  # 直前のシーケンス番号を覚える
-        
-        for _, p in my_packets.iterrows():
-            t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
-            curr_seq = p["seq"] # 現在のシーケンス番号
-
-            # 【ここが追加：シーケンス番号が連続していれば線を引く】
-            if last_t_sec is not None and last_seq_val is not None:
-                # 番号の差を計算（0-4095でループするため %4096 を使用）
-                seq_diff = (curr_seq - last_seq_val) % 4096
-                # 30秒以内の通信で、番号が1〜10の間で進んでいれば「連続」とみなして線を引く
-                if 0 < seq_diff < 10 and (t_sec - last_t_sec) < 30:
-                    ax.plot([last_t_sec, t_sec], [i, i], color=color, linewidth=1, alpha=0.4, zorder=4)
-
-            # 今の値を「直前の値」として保存して次へ
-            last_t_sec = t_sec
-            last_seq_val = curr_seq
-
         
         for _, p in my_packets.iterrows():
             t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
