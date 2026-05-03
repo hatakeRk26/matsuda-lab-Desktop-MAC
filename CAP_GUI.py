@@ -394,7 +394,7 @@ def extract_macs(pcap_file):
                     # Apple等のベンダー固有情報(221)の中身を保存（先頭16進数10文字分）
                     elif elt.ID == 221:
                         # タグ221は複数ある場合があるので、順番もキーに含める
-                        ie_dna[f"221_{len(ie_ids)}"] = elt.info.hex()[:10]
+                        ie_dna[f"221_{len(ie_ids)}"] = elt.info.hex()[:18]
 
                     # SSIDの取得とチェック
                     if elt.ID == 0:
@@ -817,11 +817,30 @@ def generate_grouped_rssi_timeline():
         ax.axhspan(i - 0.5, i + 0.5, color=get_color_by_threshold(current_zone_th), alpha=0.6, zorder=0)
         
         # --- 2. 描画ロジック（ここを全MAC共通の形状判別に変更） ---
-        my_packets = obs_df[obs_df["mac"].str.lower() == mac.lower()]
+        my_packets = obs_df[obs_df["mac"].str.lower() == mac.lower()].sort_values("timestamp")
         is_target = (mac.lower() == TARGET_MAC.lower())
         color = get_mac_color(mac)
         
         last_label_time = {} 
+        last_t_sec = None    # 直前の時間を覚える
+        last_seq_val = None  # 直前のシーケンス番号を覚える
+        
+        for _, p in my_packets.iterrows():
+            t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
+            curr_seq = p["seq"] # 現在のシーケンス番号
+
+            # 【ここが追加：シーケンス番号が連続していれば線を引く】
+            if last_t_sec is not None and last_seq_val is not None:
+                # 番号の差を計算（0-4095でループするため %4096 を使用）
+                seq_diff = (curr_seq - last_seq_val) % 4096
+                # 30秒以内の通信で、番号が1〜10の間で進んでいれば「連続」とみなして線を引く
+                if 0 < seq_diff < 10 and (t_sec - last_t_sec) < 30:
+                    ax.plot([last_t_sec, t_sec], [i, i], color=color, linewidth=1, alpha=0.4, zorder=4)
+
+            # 今の値を「直前の値」として保存して次へ
+            last_t_sec = t_sec
+            last_seq_val = curr_seq
+
         
         for _, p in my_packets.iterrows():
             t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
