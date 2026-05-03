@@ -29,6 +29,14 @@ GAP_THRESHOLD = 30
 TARGET_MAC = "50:a6:d8:7e:d7:c2" 
 # ========================
 
+# 研究用ターゲットMACと色の設定
+RESEARCH_MACS = {
+    "50:a6:d8:7e:d7:c2": "limegreen",
+    "cc:69:fa:37:af:a4": "orange",
+    "7c:10:c9:97:9b:89": "deepskyblue"
+}
+TARGET_MAC = "50:a6:d8:7e:d7:c2" 
+
 OUI_MAP = {
     "0050f2": "Microsoft/WMM",
     "0017f2": "Apple",
@@ -97,13 +105,15 @@ def get_wps_uuid(elt_info):
     return None
     
 def get_mac_color(mac):
-    """MAC分類に基づいて色を返す。データがない場合はアドレス形式から推測する。"""
-    if mac.lower() == TARGET_MAC.lower():
-        return "limegreen"
+    """MAC分類に基づいて色を返す。研究用端末は優先的に個別色を返す。"""
+    m_lower = mac.lower()
     
-    # 1. 解析データ（辞書）から取得を試みる
+    # 1. 研究用MACの判定（ここを追加）
+    if m_lower in RESEARCH_MACS:
+        return RESEARCH_MACS[m_lower]
+    
+    # 2. 既存の分類判定
     cat = mac_to_category.get(mac, None)
-    
     if cat == "Global (Universal)":
         return "black"
     elif cat == "Local (P2P/Service-Fixed)":
@@ -111,10 +121,9 @@ def get_mac_color(mac):
     elif cat == "Local (Randomized)":
         return "red"
     
-    # 2. 辞書にデータがない（アプリ再起動後など）場合のフォールバック
     if is_local_mac(mac):
-        return "red"   # ローカルアドレスなら一旦赤
-    return "black"     # それ以外（グローバル）なら黒
+        return "red"
+    return "black"
     
 def get_wps_uuid(elt_info):
     """Vendor Specific IEの中からWPSのUUID(0x1047)を抽出する"""
@@ -174,20 +183,25 @@ def log(msg):
         try:
             if not root.winfo_exists(): return
             
-            # --- ここで色（タグ）を決定 ---
             m_lower = msg.lower()
-            # ターゲットMACそのもの、あるいはターゲットに紐づく名前が含まれていたら緑にする
-            # ターゲットの名前を取得しておく
-            target_info = student_db.get(TARGET_MAC.lower(), "").lower()
+            tag = None 
+
+            # --- ここから修正：研究用MACのどれかに一致するかチェック ---
+            found_mac = False
+            for r_mac in RESEARCH_MACS:
+                if r_mac.lower() in m_lower:
+                    # MACアドレスの記号を除いた文字列をタグ名にする (例: tag_50a6d87ed7c2)
+                    tag = f"tag_{r_mac.replace(':', '')}"
+                    found_mac = True
+                    break
             
-            if TARGET_MAC.lower() in m_lower or (target_info and target_info in m_lower):
-                tag = "green_mac"
-            elif "Local (Randomized)" in msg: # get_mac_colorの赤と同じ条件
-                tag = "red_mac"
-            elif "Local (P2P/Service-Fixed)" in msg: # get_mac_colorの青と同じ条件
-                tag = "blue_mac"
-            else:
-                tag = None # Global (Universal) などはデフォルト色（黒）
+            # 研究用リストになかった場合、既存のLocal判定などを行う
+            if not found_mac:
+                if "Local (Randomized)" in msg:
+                    tag = "red_mac"
+                elif "Local (P2P/Service-Fixed)" in msg:
+                    tag = "blue_mac"
+            # -------------------------------------------------------
 
             if tag:
                 log_text.insert(tk.END, msg + "\n", tag)
@@ -197,11 +211,6 @@ def log(msg):
             log_text.see(tk.END)
         except:
             pass
-
-    try:
-        root.after(0, _update)
-    except:
-        pass
         
 def wait_and_finish(pcap_file):
     global tcpdump_proc
@@ -617,7 +626,7 @@ def generate_timeline():
         unique_macs = df["mac"].unique()
         base_time = pd.to_datetime(obs_df["timestamp"]).min() # 全体の開始時間を基準にする
 
-        fig, ax = plt.subplots(figsize=(13, max(6, len(unique_macs) * 0.4)))
+        fig, ax = plt.subplots(figsize=(13, max(6, len(unique_macs) * 0.15)))
         current_fig = fig
 
         ax.tick_params(axis='y', labelsize=5) 
@@ -735,7 +744,7 @@ def generate_grouped_rssi_timeline():
     base_time = obs_df["timestamp"].min()
     
     if show_density_var.get():
-        fig, (ax_top, ax) = plt.subplots(2, 1, figsize=(14, max(8, len(sorted_macs) * 0.4)), 
+        fig, (ax_top, ax) = plt.subplots(2, 1, figsize=(14, max(8, len(sorted_macs) * 0.12)), 
                                          gridspec_kw={'height_ratios': [1, 5]}, sharex=True)
         obs_df["elapsed_sec"] = (obs_df["timestamp"] - base_time).dt.total_seconds()
         bin_width = 5
@@ -748,7 +757,7 @@ def generate_grouped_rssi_timeline():
         ax_top.set_title("Network Activity & RSSI Grouped Timeline", fontsize=14, pad=15)
         fig.subplots_adjust(hspace=0.05)
     else:
-        fig, ax = plt.subplots(figsize=(14, max(6, len(sorted_macs) * 0.4)))
+        fig, ax = plt.subplots(figsize=(14, max(6, len(sorted_macs) * 0.15)))
         ax.set_title(f"RSSI Grouped Timeline", fontsize=14)
     
     current_fig = fig
@@ -804,14 +813,16 @@ def generate_grouped_rssi_timeline():
         
         for _, p in my_packets.iterrows():
             t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
-            
-            # 種類によって形と大きさを変える
 
+            # 研究用端末（RESEARCH_MACSに含まれるか）の判定
+            is_research_target = (mac.lower() in RESEARCH_MACS)
+            color = get_mac_color(mac)
+            
             if p.get("probe_type") == "Directed":
                 m_shape = "^"  # 三角
-                m_size = 120 if is_target else 40  # ターゲットは大きく
-                m_color = "darkgreen" if is_target else color
-                # --- SSIDラベルの重なり防止ロジック ---
+                m_size = 60 if is_target else 40  # ターゲットは大きく
+                m_color = color 
+                # SSIDラベル（斜め）の描画ロジック
                 ssid = p["target_ssid"]
                 if pd.notnull(ssid) and ssid != "":
                     # 同じSSIDの場合、前回の表示から2秒以上経過している場合のみ描画
@@ -835,10 +846,6 @@ def generate_grouped_rssi_timeline():
             # プロット
             ax.scatter(t_sec, i, color=m_color, marker=m_shape, s=m_size, 
                        alpha=0.8 if is_target else 0.5, zorder=5)
-
-            # ターゲットかつDirectedならSSID名を表示（元の機能維持）
-            if is_target and p.get("probe_type") == "Directed" and pd.notnull(p["target_ssid"]):
-                ax.text(t_sec, i - 0.25, p["target_ssid"], fontsize=5, color="darkgreen", ha="center")
 
         # ターゲットの場合だけ垂直線を引く（元の機能維持）
         if is_target:
@@ -874,10 +881,13 @@ def generate_grouped_rssi_timeline():
 
     # ラベルの色分け（安全なループ）
     for i, mac in enumerate(sorted_macs):
-        if i < len(ytick_labels): # リストの範囲内であることを確認
-            if mac.lower() == TARGET_MAC.lower():
-                ytick_labels[i].set_color("limegreen")
+        if i < len(ytick_labels): 
+            m_lower = mac.lower()
+            # 研究用端末リストにあればその色にする
+            if m_lower in RESEARCH_MACS:
+                ytick_labels[i].set_color(RESEARCH_MACS[m_lower])
                 ytick_labels[i].set_weight("bold")
+            # リストにないがローカルMACなら赤
             elif is_local_mac(mac):
                 ytick_labels[i].set_color("red")
 
@@ -1134,7 +1144,9 @@ log_text = tk.Text(log_frame, height=12)
 log_text.pack(fill="both")
 
 # ログの色設定
-log_text.tag_config("green_mac", foreground="limegreen")
+log_text.tag_config("tag_50a6d87ed7c2", foreground="limegreen")
+log_text.tag_config("tag_cc69fa37afa4", foreground="orange")
+log_text.tag_config("tag_7c10c9979b89", foreground="deepskyblue")
 log_text.tag_config("red_mac", foreground="red")
 log_text.tag_config("blue_mac", foreground="blue")
 log_text.tag_config("highlight", background="yellow")
