@@ -36,6 +36,7 @@ RESEARCH_MACS = {
     "7c:10:c9:97:9b:89": "deepskyblue"
 }
 TARGET_MAC = "50:a6:d8:7e:d7:c2" 
+student_db = {}
 
 OUI_MAP = {
     "0050f2": "Microsoft/WMM",
@@ -383,8 +384,17 @@ def extract_macs(pcap_file):
                 if hasattr(elt, "ID"):
                     ie_ids.append(str(elt.ID)) 
                     
+                    # 個体差が出るタグ(45, 127, 191)の中身を保存
                     if elt.ID in [45, 127, 191]:
                         ie_dna[elt.ID] = elt.info.hex()
+                    
+                    # Apple等のベンダー固有情報(221)の中身を保存（先頭16進数10文字分）
+                    elif elt.ID == 221:
+                        # タグ221は複数ある場合があるので、順番もキーに含める
+                        ie_dna[f"221_{len(ie_ids)}"] = elt.info.hex()[:10]
+                        
+                    # (SSID取得やWPS取得のif文はそのまま残す)
+                    if elt.ID == 0:
                         
                     # SSIDの取得とチェック
                     if elt.ID == 0:
@@ -423,7 +433,9 @@ def extract_macs(pcap_file):
             
             # 【追加】OS判定を呼び出す
             os_guess_result = guess_os(mac, ie_ids, ",".join(vendors_raw), vendor_str)
-            dna_str = ",".join([f"{k}:{v}" for k, v in sorted(ie_dna.items())])
+            id_seq = ",".join(ie_ids)
+            content_hex = "-".join([f"{k}:{v}" for k, v in sorted(ie_dna.items(), key=lambda x: str(x[0]))])
+            dna_str = f"{id_seq}|{content_hex}" 
 
             # --- 分類ロジック ---
             if not is_local:
