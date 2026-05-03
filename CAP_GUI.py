@@ -183,35 +183,38 @@ def log(msg):
     def _update():
         try:
             if not root.winfo_exists(): return
-            
             m_lower = msg.lower()
             tag = None 
 
-            # --- ここから修正：研究用MACのどれかに一致するかチェック ---
-            found_mac = False
+            # --- 修正版：研究用MACのどれかに一致するかチェック ---
             for r_mac in RESEARCH_MACS:
                 if r_mac.lower() in m_lower:
-                    # MACアドレスの記号を除いた文字列をタグ名にする (例: tag_50a6d87ed7c2)
-                    tag = f"tag_{r_mac.replace(':', '')}"
-                    found_mac = True
+                    # MACアドレスの記号を除いた小文字のタグ名にする
+                    tag = f"tag_{r_mac.replace(':', '').lower()}"
                     break
             
-            # 研究用リストになかった場合、既存のLocal判定などを行う
-            if not found_mac:
-                if "Local (Randomized)" in msg:
+            # 研究用リストになかった場合、既存のLocal判定を行う
+            if tag is None:
+                if "local (randomized)" in m_lower:
                     tag = "red_mac"
-                elif "Local (P2P/Service-Fixed)" in msg:
+                elif "local (p2p/service-fixed)" in m_lower:
                     tag = "blue_mac"
-            # -------------------------------------------------------
 
+            # テキストの挿入（ここがエラーで止まっていた可能性があります）
             if tag:
                 log_text.insert(tk.END, msg + "\n", tag)
             else:
                 log_text.insert(tk.END, msg + "\n")
                 
             log_text.see(tk.END)
-        except:
-            pass
+        except Exception as e:
+            # 内部でエラーが起きたらコンソールにだけ出す
+            print(f"Log Error: {e}")
+
+    try:
+        root.after(0, _update)
+    except:
+        pass
         
 def wait_and_finish(pcap_file):
     global tcpdump_proc
@@ -392,10 +395,7 @@ def extract_macs(pcap_file):
                     elif elt.ID == 221:
                         # タグ221は複数ある場合があるので、順番もキーに含める
                         ie_dna[f"221_{len(ie_ids)}"] = elt.info.hex()[:10]
-                        
-                    # (SSID取得やWPS取得のif文はそのまま残す)
-                    if elt.ID == 0:
-                        
+
                     # SSIDの取得とチェック
                     if elt.ID == 0:
                         try:
