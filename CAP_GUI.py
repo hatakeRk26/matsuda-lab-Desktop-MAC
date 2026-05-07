@@ -395,7 +395,7 @@ def extract_macs(pcap_file):
                         ie_dna[elt.ID] = elt.info.hex()[:10]
                     
                     # Apple等のベンダー固有情報(221)の中身を保存（先頭16進数10文字分）
-                    elif elt.ID == 221:ｓ
+                    elif elt.ID == 221:
                         vendor_ie_list.append(elt.info.hex()[:18])
 
                     # SSIDの取得とチェック
@@ -437,7 +437,13 @@ def extract_macs(pcap_file):
                 vendor_ie_list.sort()
                 for i, content in enumerate(vendor_ie_list):
                     ie_dna[f"221_v{i}"] = content
-                    
+            
+            dna_parts = []
+            for k in sorted(ie_dna.keys(), key=lambda x: str(x)):
+                val = str(ie_dna[k])
+                length = len(val) // 2 # 16進数なので2文字で1バイト
+                dna_parts.append(f"{k}L{length}:{val}")
+                
             # 【追加】OS判定を呼び出す
             os_guess_result = guess_os(mac, ie_ids, ",".join(vendors_raw), vendor_str)
             content_hex = "-".join([f"{k}:{v}" for k, v in sorted(ie_dna.items(), key=lambda x: str(x[0]))])
@@ -743,33 +749,39 @@ def generate_grouped_rssi_timeline():
     
     obs_df = pd.read_csv(CSV_FILE)
     obs_df["timestamp"] = pd.to_datetime(obs_df["timestamp"])
-    avg_rssi_map = obs_df.groupby("mac")["rssi"].mean().to_dict()
     
-    df["start"] = pd.to_datetime(df["start"])
-    df = df[df["duration"] > 0] if exclude_zero_var.get() else df[df["duration"] >= 0]
+    # Identity（個人）を特定する関数
+    def get_identity(row):
+        m = str(row['mac']).lower()
+        os_val = str(row.get('os', 'Unknown'))
+        # 1. OS列に "Owner: 名前" があればそれを返す
+        if "(Owner: " in os_val:
+            return os_val.split("(Owner: ")[1].strip(")")
+        # 2. 名簿に直接MACアドレスがあれば名前を返す
+        if m in student_db:
+            return student_db[m]
+        # 3. それ以外はMACアドレスをIdentityとする
+        return m
+
+    # Identity列をデータフレームに追加
+    obs_df['identity'] = obs_df.apply(get_identity, axis=1)
     
-    # 全てのユニークなMACアドレスをRSSI順に並べる
-    sorted_macs = sorted(df["mac"].unique(), key=lambda x: avg_rssi_map.get(x, -100), reverse=True)
+    # Identityごとの平均RSSIを計算
+    avg_rssi_map = obs_df.groupby("identity")["rssi"].mean().to_dict()
     
-    # --- 【修正箇所】ハイブリッドフィルタリングロジック ---
+    # 表示対象のIdentityリストを作成（RSSI順にソート）
+    unique_identities = sorted(obs_df['identity'].unique(), 
+                               key=lambda x: avg_rssi_map.get(x, -100), reverse=True)
+
+    # フィルタリング処理
     if dna_filter_var.get():
-        target_id = dna_input_var.get().strip() # 検索窓の文字（UUID:... または DNA:...）
+        target_id = dna_input_var.get().strip()
         if target_id:
-            filtered_macs = []
-            for m in sorted_macs:
-                # このMACアドレスが属する hybrid_id を sessions.csv(df) から探す
-                match = df[df["mac"] == m]
-                if not match.empty and "hybrid_id" in df.columns:
-                    h_id = str(match["hybrid_id"].iloc[0])
-                    # 検索文字が hybrid_id に含まれていれば、表示対象にする
-                    if target_id in h_id:
-                        filtered_macs.append(m)
-            sorted_macs = filtered_macs
-            log(f"[Filter] ID '{target_id}' に一致する {len(sorted_macs)} 台を表示します")
-    # ---------------------------------------------------
-            
-    if not sorted_macs:
-        log("表示対象の端末がありません")
+            unique_identities = [ident for ident in unique_identities if target_id in ident]
+            log(f"[Filter] Identity '{target_id}' に一致するグループを表示します")
+
+    if not unique_identities:
+        log("表示対象のIdentityがありません")
         return
 
     base_time = obs_df["timestamp"].min()
@@ -816,112 +828,88 @@ def generate_grouped_rssi_timeline():
     last_rssi = first_rssi
     thresholds = [-30, -40, -50, -60, -70, -80]
 
-    for i, mac in enumerate(sorted_macs):
-        rssi = avg_rssi_map.get(mac, -100)
-        
-        # --- 1. 1dBmごとの細い黒線を描画 (隣とRSSIの整数値が異なる場合) ---
-        if i > 0:
-            if int(last_rssi) != int(rssi):
-                ax.axhline(i - 0.5, color="black", linewidth=0.7, alpha=0.2, zorder=1)
-
-        # --- 2. 10dBmごとの太い青線を描画 ---
-        for th in thresholds:
-            if i > 0 and last_rssi > th >= rssi:
-                ax.axhline(i - 0.5, color="blue", linewidth=1.2, linestyle="--", alpha=0.8, zorder=4)
-                ax.text(time_var.get() * 60 * 1.005, i - 0.5, f"{th}dBm", 
-                        color="blue", va="center", fontweight="bold", fontsize=9)
-                current_zone_th = th 
-        
-        last_rssi = rssi
-        ax.axhspan(i - 0.5, i + 0.5, color=get_color_by_threshold(current_zone_th), alpha=0.6, zorder=0)
-        
-        # --- 2. 描画ロジック（ここを全MAC共通の形状判別に変更） ---
-        my_packets = obs_df[obs_df["mac"].str.lower() == mac.lower()].sort_values("timestamp")
-        is_target = (mac.lower() == TARGET_MAC.lower())
-        color = get_mac_color(mac)
-        
-        last_label_time = {} 
-        
-        for _, p in my_packets.iterrows():
-            t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
-
-            # 研究用端末（RESEARCH_MACSに含まれるか）の判定
-            is_research_target = (mac.lower() in RESEARCH_MACS)
-            color = get_mac_color(mac)
+    for i, ident in enumerate(unique_identities):
+            rssi = avg_rssi_map.get(ident, -100)
             
-            if p.get("probe_type") == "Directed":
-                m_shape = "^"  # 三角
-                m_size = 60 if is_target else 40  # ターゲットは大きく
-                m_color = color 
-                # SSIDラベル（斜め）の描画ロジック
-                ssid = p["target_ssid"]
-                if pd.notnull(ssid) and ssid != "":
-                    # 同じSSIDの場合、前回の表示から2秒以上経過している場合のみ描画
-                    last_time = last_label_time.get(ssid, -999)
-                    if (t_sec - last_time) > 2.0: 
-                        ax.text(t_sec, i - 0.2, ssid, 
-                                fontsize=6,
-                                color=m_color,
-                                ha="left",
-                                va="bottom", 
-                                rotation=20,
-                                alpha=0.9,
-                                fontweight='bold' if is_target else 'normal',
-                                zorder=6)
-                        last_label_time[ssid] = t_sec # 描画した時間を記録
-            else:
-                m_shape = "o"  # 丸
-                m_size = 60 if is_target else 20   # ターゲットは大きく
-                m_color = "limegreen" if is_target else color
+            # 1dBmごと、10dBmごとの境界線と背景色の描画
+            if i > 0:
+                if int(last_rssi) != int(rssi):
+                    ax.axhline(i - 0.5, color="black", linewidth=0.7, alpha=0.2, zorder=1)
+            for th in thresholds:
+                if i > 0 and last_rssi > th >= rssi:
+                    ax.axhline(i - 0.5, color="blue", linewidth=1.2, linestyle="--", alpha=0.8, zorder=4)
+                    ax.text(time_var.get() * 60 * 1.005, i - 0.5, f"{th}dBm", color="blue", va="center", fontweight="bold", fontsize=9)
+                    current_zone_th = th 
+            last_rssi = rssi
+            ax.axhspan(i - 0.5, i + 0.5, color=get_color_by_threshold(current_zone_th), alpha=0.6, zorder=0)
 
-            # プロット
-            ax.scatter(t_sec, i, color=m_color, marker=m_shape, s=m_size, 
-                       alpha=0.8 if is_target else 0.5, zorder=5)
-
-        # ターゲットの場合だけ垂直線を引く（元の機能維持）
-        if is_target:
+            # このIdentityに属する全パケットを抽出
+            my_packets = obs_df[obs_df["identity"] == ident].sort_values("timestamp")
+            
+            # 色とターゲット判定（グループ内の代表MACで判定）
+            rep_mac = my_packets['mac'].iloc[0] if not my_packets.empty else ident
+            color = get_mac_color(rep_mac)
+            is_target = (rep_mac.lower() == TARGET_MAC.lower())
+            
+            last_label_time = {} 
             for _, p in my_packets.iterrows():
                 t_sec = (pd.to_datetime(p["timestamp"]) - base_time).total_seconds()
-                ax.axvline(x=t_sec, color='limegreen', linestyle=':', linewidth=0.8, alpha=0.4, zorder=1)
+                if p.get("probe_type") == "Directed":
+                    m_shape, m_size = "^", (60 if is_target else 40)
+                    ssid = p["target_ssid"]
+                    if pd.notnull(ssid) and ssid != "":
+                        last_time = last_label_time.get(ssid, -999)
+                        if (t_sec - last_time) > 2.0: 
+                            ax.text(t_sec, i - 0.2, ssid, fontsize=6, color=color, rotation=20, zorder=6)
+                            last_label_time[ssid] = t_sec
+                else:
+                    m_shape, m_size = "o", (60 if is_target else 20)
+                ax.scatter(t_sec, i, color=color, marker=m_shape, s=m_size, alpha=0.7, zorder=5)
 
-        # 滞在期間の補助線を細く入れる（パケット同士を繋いで見やすくするため）
-        mac_sessions = df[df["mac"] == mac]
-        for _, row in mac_sessions.iterrows():
-            start_sec = (row["start"] - base_time).total_seconds()
-            if row["duration"] > 0:
-                ax.barh(i, max(row["duration"], 1.0), left=start_sec, color=color, height=0.1, alpha=0.2, zorder=3)
+            # Identity単位の滞在期間（最初から最後までのパケット）を細い線で繋ぐ
+            if not my_packets.empty:
+                start_sec = (my_packets["timestamp"].min() - base_time).total_seconds()
+                end_sec = (my_packets["timestamp"].max() - base_time).total_seconds()
+                ax.barh(i, max(end_sec - start_sec, 1.0), left=start_sec, color=color, height=0.1, alpha=0.2, zorder=3)
 
-    # --- [修正版] 軸の設定と色付け ---
-    ax.set_yticks(range(len(sorted_macs))) # 1. どこにラベルを置くか先に決める
+    # Y軸の目盛り位置を設定
+    ax.set_yticks(range(len(unique_identities)))
     
+    # ラベル文字の作成（Identity名 + 平均RSSI）
     new_labels = []
-    for m in sorted_macs:
-        # 名簿にあれば「学籍番号 名前」、なければ「MACアドレス」を表示
-        # display_name = student_db.get(m.lower(), m)
-        display_name = m
-        rssi_val = int(avg_rssi_map.get(m, 0))
-        new_labels.append(f"{display_name} ({rssi_val}dBm)")
+    for ident in unique_identities:
+        rssi_val = int(avg_rssi_map.get(ident, 0))
+        new_labels.append(f"{ident} ({rssi_val}dBm)")
     
-    ax.set_yticklabels(new_labels) # 2. ラベルの文字をセットする
-    ax.set_ylim(-0.5, len(sorted_macs) - 0.5)
+    ax.set_yticklabels(new_labels)
+    # 修正：表示範囲をIdentityの数に合わせる
+    ax.set_ylim(-0.5, len(unique_identities) - 0.5) 
     ax.invert_yaxis()
 
-    # 3. 強制的に描画を更新してからラベルオブジェクトを取得（IndexError対策）
+    # 3. 強制的に描画を更新してからラベルオブジェクトを取得
     plt.draw() 
     ytick_labels = ax.get_yticklabels()
 
-    # ラベルの色分け（安全なループ）
-    for i, mac in enumerate(sorted_macs):
-        if i < len(ytick_labels): 
-            m_lower = mac.lower()
-            # 研究用端末リストにあればその色にする
-            if m_lower in RESEARCH_MACS:
-                ytick_labels[i].set_color(RESEARCH_MACS[m_lower])
-                ytick_labels[i].set_weight("bold")
-            # リストにないがローカルMACなら赤
-            elif is_local_mac(mac):
-                ytick_labels[i].set_color("red")
-
+    # ラベルの色分け（Identity単位に修正）
+    for i, ident in enumerate(unique_identities):
+        if i < len(ytick_labels):
+            # このIdentity（個人）が使っている代表的なMACアドレスを取得して色を決定
+            ident_pkts = obs_df[obs_df["identity"] == ident]
+            if not ident_pkts.empty:
+                rep_mac = str(ident_pkts['mac'].iloc[0]).lower()
+                
+                # 研究用端末リストにあればその色にする
+                if rep_mac in RESEARCH_MACS:
+                    ytick_labels[i].set_color(RESEARCH_MACS[rep_mac])
+                    ytick_labels[i].set_weight("bold")
+                # 名簿にある学生（Identityに名前が含まれる場合）は青色、太字にする
+                elif any(char.isalpha() for char in ident): # 名前（文字）が含まれるか判定
+                    ytick_labels[i].set_color("blue")
+                    ytick_labels[i].set_weight("bold")
+                # リストにないがローカルMACなら赤
+                elif is_local_mac(rep_mac):
+                    ytick_labels[i].set_color("red")
+                    
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x//60)}:{int(x%60):02d}"))
     ax.set_xlim(0, time_var.get() * 60)
     
