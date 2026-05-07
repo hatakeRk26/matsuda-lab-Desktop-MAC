@@ -380,6 +380,7 @@ def extract_macs(pcap_file):
             vendors_raw = [] # os判定用
             vendor_str = "Unknown"  # ← 最初に見つからなかった時用の値を入れておく
             ie_dna = {} 
+            vendor_ie_list = []
             probe_type = "Broadcast"
             target_ssid = ""
             
@@ -390,12 +391,12 @@ def extract_macs(pcap_file):
                     
                     # 個体差が出るタグ(45, 127, 191)の中身を保存
                     if elt.ID in [45, 127, 191]:
-                        ie_dna[elt.ID] = elt.info.hex()
+                        ie_dna[elt.ID] = elt.info.hex()[:10]
                     
                     # Apple等のベンダー固有情報(221)の中身を保存（先頭16進数10文字分）
                     elif elt.ID == 221:
                         # タグ221は複数ある場合があるので、順番もキーに含める
-                        ie_dna[f"221_{len(ie_ids)}"] = elt.info.hex()[:18]
+                        vendor_ie_list.append(elt.info.hex()[:18])
 
                     # SSIDの取得とチェック
                     if elt.ID == 0:
@@ -432,32 +433,34 @@ def extract_macs(pcap_file):
             if detected_vendors:
                 vendor_str = "|".join(set(detected_vendors)) # 重複を消して合体
             
+            if vendor_ie_list:
+                vendor_ie_list.sort()
+                for i, content in enumerate(vendor_ie_list):
+                    ie_dna[f"221_v{i}"] = content
+                    
             # 【追加】OS判定を呼び出す
             os_guess_result = guess_os(mac, ie_ids, ",".join(vendors_raw), vendor_str)
-            id_seq = ",".join(ie_ids)
             content_hex = "-".join([f"{k}:{v}" for k, v in sorted(ie_dna.items(), key=lambda x: str(x[0]))])
-            dna_str = f"{id_seq}|{content_hex}" 
-            
-            # --- 【追加：自動学習ロジック】 ---
-            if not is_local:
-                # 本物のMACアドレス（Global）なら、指紋(DNA)と名前を紐付けて学習する
-                known_dna_pool[dna_str] = mac
-                # log(f"[DNA学習] {mac} の指紋を登録しました") # 確認したい場合はコメント解除
-            
-            # --- 【追加：照合ロジック】 ---
-            identified_name = ""
+            dna_str = content_hex if content_hex else "no_ie_data"
+            #id_seq = ",".join(ie_ids)
+            #dna_str = f"{id_seq}|{content_hex}" 
+
             if is_local:
-                # ランダムMACの場合、過去に学習した指紋の中に同じものがないか探す
                 if dna_str in known_dna_pool:
                     identified_name = known_dna_pool[dna_str]
-                    # OS情報の後ろに「推定される持ち主」を追記する
                     os_guess_result += f" (Owner: {identified_name})"
-            # ---------------------------------
-
-            # --- 分類ロジック ---
+        
             if not is_local:
+                # 1. Global MAC (本物) の場合：DNAを学習し、カテゴリを設定
+                known_dna_pool[dna_str] = mac
                 mac_category = "Global (Universal)"
             else:
+                # 2. Local MAC (ランダム) の場合：学習済みプールからOwnerを探す
+                if dna_str in known_dna_pool:
+                    owner = known_dna_pool[dna_str]
+                    os_guess_result += f" (Owner: {owner})"
+                
+                # カテゴリの詳細分類
                 if is_p2p_service:
                     mac_category = "Local (P2P/Service-Fixed)"
                 else:
