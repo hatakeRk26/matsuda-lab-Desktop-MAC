@@ -787,8 +787,8 @@ def generate_grouped_rssi_timeline():
     base_time = obs_df["timestamp"].min()
     
     if show_density_var.get():
-        fig, (ax_top, ax) = plt.subplots(2, 1, figsize=(14, max(8, len(sorted_macs) * 0.12)), 
-                                         gridspec_kw={'height_ratios': [1, 5]}, sharex=True)
+        fig, (ax_top, ax) = plt.subplots(2, 1, figsize=(14, max(8, len(unique_identities) * 0.12)), 
+                                 gridspec_kw={'height_ratios': [1, 5]}, sharex=True)
         obs_df["elapsed_sec"] = (obs_df["timestamp"] - base_time).dt.total_seconds()
         bin_width = 5
         bins = np.arange(0, time_var.get() * 60 + bin_width, bin_width)
@@ -800,7 +800,7 @@ def generate_grouped_rssi_timeline():
         ax_top.set_title("Network Activity & RSSI Grouped Timeline", fontsize=14, pad=15)
         fig.subplots_adjust(hspace=0.05)
     else:
-        fig, ax = plt.subplots(figsize=(14, max(6, len(sorted_macs) * 0.15)))
+        fig, ax = plt.subplots(figsize=(14, max(6, len(unique_identities) * 0.15)))
         ax.set_title(f"RSSI Grouped Timeline", fontsize=14)
     
     current_fig = fig
@@ -817,7 +817,7 @@ def generate_grouped_rssi_timeline():
     ax.xaxis.set_major_locator(MultipleLocator(60))
     ax.grid(axis='x', linestyle='--', alpha=0.3, zorder=0)
 
-    first_rssi = avg_rssi_map.get(sorted_macs[0], -100)
+    first_rssi = avg_rssi_map.get(unique_identities[0], -100)
     current_zone_th = -100
     for th in [-30, -40, -50, -60, -70, -80]:
         if first_rssi >= th:
