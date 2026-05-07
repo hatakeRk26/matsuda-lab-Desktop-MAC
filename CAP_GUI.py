@@ -171,7 +171,8 @@ if not os.path.exists(CSV_FILE):
         "category",
         "os",
         "probe_type", 
-        "target_ssid"
+        "target_ssid",
+        "ie_details"
         ])
 
 def log(msg):
@@ -442,6 +443,7 @@ def extract_macs(pcap_file):
             os_guess_result = guess_os(mac, ie_ids, ",".join(vendors_raw), vendor_str)
             content_hex = "-".join([f"{k}:{v}" for k, v in sorted(ie_dna.items(), key=lambda x: str(x[0]))])
             dna_str = content_hex if content_hex else "no_ie_data"
+            ie_details_str = ",".join([f"{k}:{v}" for k, v in sorted(ie_dna.items(), key=lambda x: str(x[0]))])
             #id_seq = ",".join(ie_ids)
             #dna_str = f"{id_seq}|{content_hex}" 
 
@@ -491,7 +493,8 @@ def extract_macs(pcap_file):
                 mac_category,
                 os_guess_result,
                 probe_type,
-                target_ssid
+                target_ssid,
+                ie_details_str
             ])
 
             if mac not in sta_records:
@@ -971,7 +974,8 @@ def start_capture():
         "category",
         "os",
         "probe_type",
-        "target_ssid"
+        "target_ssid",
+        "ie_details"
         ])
 
     duration = time_var.get()
