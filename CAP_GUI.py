@@ -76,7 +76,7 @@ def load_student_list():
             print(f"名簿読み込みエラー: {e}")
 
 # 起動時に実行
-#load_student_list()
+load_student_list()
 
 tcpdump_proc = None
 selected_channel = None
@@ -395,8 +395,7 @@ def extract_macs(pcap_file):
                         ie_dna[elt.ID] = elt.info.hex()[:10]
                     
                     # Apple等のベンダー固有情報(221)の中身を保存（先頭16進数10文字分）
-                    elif elt.ID == 221:
-                        # タグ221は複数ある場合があるので、順番もキーに含める
+                    elif elt.ID == 221:ｓ
                         vendor_ie_list.append(elt.info.hex()[:18])
 
                     # SSIDの取得とチェック
@@ -446,21 +445,18 @@ def extract_macs(pcap_file):
             ie_details_str = ",".join([f"{k}:{v}" for k, v in sorted(ie_dna.items(), key=lambda x: str(x[0]))])
             #id_seq = ",".join(ie_ids)
             #dna_str = f"{id_seq}|{content_hex}" 
-
-            if is_local:
-                if dna_str in known_dna_pool:
-                    identified_name = known_dna_pool[dna_str]
-                    os_guess_result += f" (Owner: {identified_name})"
-        
+            
             if not is_local:
-                # 1. Global MAC (本物) の場合：DNAを学習し、カテゴリを設定
+                # 1. Global MAC (本物) の場合：DNAを学習し保存
                 known_dna_pool[dna_str] = mac
                 mac_category = "Global (Universal)"
             else:
                 # 2. Local MAC (ランダム) の場合：学習済みプールからOwnerを探す
                 if dna_str in known_dna_pool:
-                    owner = known_dna_pool[dna_str]
-                    os_guess_result += f" (Owner: {owner})"
+                    owner_mac = known_dna_pool[dna_str]
+                    # 名簿(student_db)にあれば名前を、なければMACアドレスを表示
+                    owner_info = student_db.get(owner_mac, owner_mac)
+                    os_guess_result += f" (Owner: {owner_info})"
                 
                 # カテゴリの詳細分類
                 if is_p2p_service:
